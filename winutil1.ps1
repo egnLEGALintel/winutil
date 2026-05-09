@@ -3,7 +3,7 @@
     Author         : Chris Titus @christitustech
     Runspace Author: @DeveloperDurp
     GitHub         : https://github.com/ChrisTitusTech
-    Version        : 26.04.14
+    Version        : 26.05.09
 #>
 
 param (
@@ -33,6 +33,10 @@ if ($Offline) {
     $PARAM_OFFLINE = $true
 }
 
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    Write-Host "WinUtil is unable to run on your system, powershell execution is restricted by security policies" -ForegroundColor Red
+    return
+}
 
 if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Output "Winutil needs to be run as Administrator. Attempting to relaunch."
@@ -73,7 +77,7 @@ Add-Type -AssemblyName System.Windows.Forms
 # Variable to sync between runspaces
 $sync = [Hashtable]::Synchronized(@{})
 $sync.PSScriptRoot = $PSScriptRoot
-$sync.version = "26.04.14"
+$sync.version = "26.05.09"
 $sync.configs = @{}
 $sync.Buttons = [System.Collections.Generic.List[PSObject]]::new()
 $sync.preferences = @{}
@@ -363,30 +367,6 @@ function Get-LocalizedYesNo {
     return $charactersArray
 
   }
-function Get-WinUtilInstallerProcess {
-    <#
-
-    .SYNOPSIS
-        Checks if the given process is running
-
-    .PARAMETER Process
-        The process to check
-
-    .OUTPUTS
-        Boolean - True if the process is running
-
-    #>
-
-    param($Process)
-
-    if ($Null -eq $Process) {
-        return $false
-    }
-    if (Get-Process -Id $Process.Id -ErrorAction SilentlyContinue) {
-        return $true
-    }
-    return $false
-}
 function Get-WinUtilSelectedPackages
 {
      <#
@@ -1560,21 +1540,18 @@ Function Invoke-WinUtilCurrentSystem {
     if ($CheckBox -eq "tweaks") {
 
         if (!(Test-Path 'HKU:\')) {$null = (New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS)}
-        $ScheduledTasks = Get-ScheduledTask
 
         $sync.configs.tweaks | Get-Member -MemberType NoteProperty | ForEach-Object {
 
             $Config = $psitem.Name
-            #WPFEssTweaksTele
             $entry = $sync.configs.tweaks.$Config
             $registryKeys = $entry.registry
-            $scheduledtaskKeys = $entry.scheduledtask
             $serviceKeys = $entry.service
             $appxKeys = $entry.appx
             $invokeScript = $entry.InvokeScript
             $entryType = $entry.Type
 
-            if ($registryKeys -or $scheduledtaskKeys -or $serviceKeys) {
+            if ($registryKeys -or $serviceKeys) {
                 $Values = @()
 
                 if ($entryType -eq "Toggle") {
@@ -1616,20 +1593,6 @@ Function Invoke-WinUtilCurrentSystem {
 
                     if ($registryTotal -gt 0 -and $registryMatchCount -ne $registryTotal) {
                         $values += $False
-                    }
-                }
-
-                Foreach ($tweaks in $scheduledtaskKeys) {
-                    Foreach ($tweak in $tweaks) {
-                        $task = $ScheduledTasks | Where-Object {$($psitem.TaskPath + $psitem.TaskName) -like "\$($tweak.name)"}
-
-                        if ($task) {
-                            $actualValue = $task.State
-                            $expectedValue = $tweak.State
-                            if ($expectedValue -ne $actualValue) {
-                                $values += $False
-                            }
-                        }
                     }
                 }
 
@@ -1833,12 +1796,19 @@ function Invoke-WinUtilFontScaling {
 
 
 function Invoke-WinUtilInstallPSProfile {
-
-    if (Test-Path $Profile) {
-        Rename-Item $Profile -NewName ($Profile + '.bak')
+    if (-not (Get-Command wt)) {
+        Write-Host "Windows Terminal not found installing..."
+        Install-WinUtilWinget
+        winget install Microsoft.WindowsTerminal --source winget --silent
     }
 
-    Start-Process pwsh -ArgumentList '-Command "irm https://github.com/ChrisTitusTech/powershell-profile/raw/main/setup.ps1 | iex"'
+    if (-not (Get-Command pwsh)) {
+        Write-Host "Powershell 7 not found installing..."
+        Install-WinUtilWinget
+        winget install Microsoft.PowerShell --source winget --silent
+    }
+
+    wt new-tab pwsh -NoExit -Command "irm https://github.com/ChrisTitusTech/powershell-profile/raw/main/setup.ps1 | iex"
 }
 function Write-Win11ISOLog {
     param([string]$Message)
@@ -1891,7 +1861,7 @@ function Invoke-WinUtilISOMountAndVerify {
     Set-WinUtilProgressBar -Label "Mounting ISO..." -Percent 10
 
     try {
-        Mount-DiskImage -ImagePath $isoPath -ErrorAction Stop | Out-Null
+        Mount-DiskImage -ImagePath $isoPath
 
         do {
             Start-Sleep -Milliseconds 500
@@ -1906,8 +1876,8 @@ function Invoke-WinUtilISOMountAndVerify {
         $esdPath = Join-Path $driveLetter "sources\install.esd"
 
         if (-not (Test-Path $wimPath) -and -not (Test-Path $esdPath)) {
-            Dismount-DiskImage -ImagePath $isoPath | Out-Null
-            Write-Win11ISOLog "ERROR: install.wim/install.esd not found ? not a valid Windows ISO."
+            Dismount-DiskImage -ImagePath $isoPath
+            Write-Win11ISOLog "ERROR: install.wim/install.esd not found ??? not a valid Windows ISO."
             [System.Windows.MessageBox]::Show(
                 "This does not appear to be a valid Windows ISO.`n`ninstall.wim / install.esd was not found.",
                 "Invalid ISO", "OK", "Error")
@@ -1921,7 +1891,7 @@ function Invoke-WinUtilISOMountAndVerify {
         $imageInfo = Get-WindowsImage -ImagePath $activeWim | Select-Object ImageIndex, ImageName
 
         if (-not ($imageInfo | Where-Object { $_.ImageName -match "Windows 11" })) {
-            Dismount-DiskImage -ImagePath $isoPath | Out-Null
+            Dismount-DiskImage -ImagePath $isoPath
             Write-Win11ISOLog "ERROR: No 'Windows 11' edition found in the image."
             [System.Windows.MessageBox]::Show(
                 "No Windows 11 edition was found in this ISO.`n`nOnly official Windows 11 ISOs are supported.",
@@ -1993,7 +1963,7 @@ function Invoke-WinUtilISOModify {
     $sync["WPFWin11ISOModifyButton"].IsEnabled = $false
     $sync["Win11ISOModifying"] = $true
 
-    $existingWorkDir = Get-Item -Path (Join-Path $env:TEMP "WinUtil_Win11ISO*") -ErrorAction SilentlyContinue |
+    $existingWorkDir = Get-Item -Path (Join-Path $env:TEMP "WinUtil_Win11ISO*") |
         Where-Object { $_.PSIsContainer } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
     $workDir = if ($existingWorkDir) {
@@ -2044,7 +2014,7 @@ function Invoke-WinUtilISOModify {
                 $sync["WPFWin11ISOStatusLog"].CaretIndex = $sync["WPFWin11ISOStatusLog"].Text.Length
                 $sync["WPFWin11ISOStatusLog"].ScrollToEnd()
             })
-            Add-Content -Path (Join-Path $workDir "WinUtil_Win11ISO.log") -Value "[$ts] $msg" -ErrorAction SilentlyContinue
+            Add-Content -Path (Join-Path $workDir "WinUtil_Win11ISO.log") -Value "[$ts] $msg"
         }
 
         function SetProgress($label, $pct) {
@@ -2065,11 +2035,11 @@ function Invoke-WinUtilISOModify {
             Log "Creating working directory: $workDir"
             $isoContents = Join-Path $workDir "iso_contents"
             $mountDir    = Join-Path $workDir "wim_mount"
-            New-Item -ItemType Directory -Path $isoContents, $mountDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $isoContents, $mountDir -Force
             SetProgress "Copying ISO contents..." 10
 
             Log "Copying ISO contents from $driveLetter to $isoContents..."
-            & robocopy $driveLetter $isoContents /E /NFL /NDL /NJH /NJS | Out-Null
+            & robocopy $driveLetter $isoContents /E /NFL /NDL /NJH /NJS
             Log "ISO contents copied."
             SetProgress "Mounting install.wim..." 25
 
@@ -2078,7 +2048,7 @@ function Invoke-WinUtilISOModify {
             Set-ItemProperty -Path $localWim -Name IsReadOnly -Value $false
 
             Log "Mounting install.wim (Index ${selectedWimIndex}: $selectedEditionName) at $mountDir..."
-            Mount-WindowsImage -ImagePath $localWim -Index $selectedWimIndex -Path $mountDir -ErrorAction Stop | Out-Null
+            Mount-WindowsImage -ImagePath $localWim -Index $selectedWimIndex -Path $mountDir
             SetProgress "Modifying install.wim..." 45
 
             Log "Applying WinUtil modifications to install.wim..."
@@ -2091,13 +2061,13 @@ function Invoke-WinUtilISOModify {
 
             SetProgress "Saving modified install.wim..." 65
             Log "Dismounting and saving install.wim. This will take several minutes..."
-            Dismount-WindowsImage -Path $mountDir -Save -ErrorAction Stop | Out-Null
+            Dismount-WindowsImage -Path $mountDir -Save
             Log "install.wim saved."
 
             SetProgress "Removing unused editions from install.wim..." 70
             Log "Exporting edition '$selectedEditionName' (Index $selectedWimIndex) to a single-edition install.wim..."
             $exportWim = Join-Path $isoContents "sources\install_export.wim"
-            Export-WindowsImage -SourceImagePath $localWim -SourceIndex $selectedWimIndex -DestinationImagePath $exportWim -ErrorAction Stop | Out-Null
+            Export-WindowsImage -SourceImagePath $localWim -SourceIndex $selectedWimIndex -DestinationImagePath $exportWim
             Remove-Item -Path $localWim -Force
             Rename-Item -Path $exportWim -NewName "install.wim" -Force
             $localWim = Join-Path $isoContents "sources\install.wim"
@@ -2105,7 +2075,7 @@ function Invoke-WinUtilISOModify {
 
             SetProgress "Dismounting source ISO..." 80
             Log "Dismounting original ISO..."
-            Dismount-DiskImage -ImagePath $isoPath | Out-Null
+            Dismount-DiskImage -ImagePath $isoPath
 
             $sync["Win11ISOWorkDir"]     = $workDir
             $sync["Win11ISOContentsDir"] = $isoContents
@@ -2121,26 +2091,26 @@ function Invoke-WinUtilISOModify {
 
             try {
                 if (Test-Path $mountDir) {
-                    $mountedImages = Get-WindowsImage -Mounted -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $mountDir }
+                    $mountedImages = Get-WindowsImage -Mounted | Where-Object { $_.Path -eq $mountDir }
                     if ($mountedImages) {
                         Log "Cleaning up: dismounting install.wim (discarding changes)..."
-                        Dismount-WindowsImage -Path $mountDir -Discard -ErrorAction SilentlyContinue | Out-Null
+                        Dismount-WindowsImage -Path $mountDir -Discard
                     }
                 }
             } catch { Log "Warning: could not dismount install.wim during cleanup: $_" }
 
             try {
-                $mountedISO = Get-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue
+                $mountedISO = Get-DiskImage -ImagePath $isoPath
                 if ($mountedISO -and $mountedISO.Attached) {
                     Log "Cleaning up: dismounting source ISO..."
-                    Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue | Out-Null
+                    Dismount-DiskImage -ImagePath $isoPath
                 }
             } catch { Log "Warning: could not dismount ISO during cleanup: $_" }
 
             try {
                 if (Test-Path $workDir) {
                     Log "Cleaning up: removing temp directory $workDir..."
-                    Remove-Item -Path $workDir -Recurse -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $workDir -Recurse -Force
                 }
             } catch { Log "Warning: could not remove temp directory during cleanup: $_" }
 
@@ -2164,9 +2134,9 @@ function Invoke-WinUtilISOModify {
                 }
             })
         }
-    }) | Out-Null
+    })
 
-    $script.BeginInvoke() | Out-Null
+    $script.BeginInvoke()
 }
 
 function Invoke-WinUtilISOCheckExistingWork {
@@ -2177,7 +2147,7 @@ function Invoke-WinUtilISOCheckExistingWork {
         return
     }
 
-    $existingWorkDir = Get-Item -Path (Join-Path $env:TEMP "WinUtil_Win11ISO*") -ErrorAction SilentlyContinue |
+    $existingWorkDir = Get-Item -Path (Join-Path $env:TEMP "WinUtil_Win11ISO*") |
         Where-Object { $_.PSIsContainer } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
     if (-not $existingWorkDir) { return }
@@ -2233,7 +2203,7 @@ function Invoke-WinUtilISOCleanAndReset {
                 $sync["WPFWin11ISOStatusLog"].CaretIndex = $sync["WPFWin11ISOStatusLog"].Text.Length
                 $sync["WPFWin11ISOStatusLog"].ScrollToEnd()
             })
-            Add-Content -Path (Join-Path $workDir "WinUtil_Win11ISO.log") -Value "[$ts] $msg" -ErrorAction SilentlyContinue
+            Add-Content -Path (Join-Path $workDir "WinUtil_Win11ISO.log") -Value "[$ts] $msg"
         }
 
         function SetProgress($label, $pct) {
@@ -2248,23 +2218,23 @@ function Invoke-WinUtilISOCleanAndReset {
             if ($workDir) {
                 $mountDir = Join-Path $workDir "wim_mount"
                 try {
-                    $mountedImages = Get-WindowsImage -Mounted -ErrorAction SilentlyContinue |
+                    $mountedImages = Get-WindowsImage -Mounted |
                                      Where-Object { $_.Path -like "$workDir*" }
                     if ($mountedImages) {
                         foreach ($img in $mountedImages) {
                             Log "Dismounting WIM at: $($img.Path) (discarding changes)..."
                             SetProgress "Dismounting WIM image..." 3
-                            Dismount-WindowsImage -Path $img.Path -Discard -ErrorAction Stop | Out-Null
+                            Dismount-WindowsImage -Path $img.Path -Discard
                             Log "WIM dismounted successfully."
                         }
                     } elseif (Test-Path $mountDir) {
                         Log "No mounted WIM reported by Get-WindowsImage. Running DISM /Cleanup-Wim as a precaution..."
                         SetProgress "Running DISM cleanup..." 3
-                        & dism /English /Cleanup-Wim 2>&1 | ForEach-Object { Log $_ }
+                        & dism /English /Cleanup-Wim | ForEach-Object { Log $_ }
                     }
                 } catch {
                     Log "Warning: could not dismount WIM cleanly. Attempting DISM /Cleanup-Wim fallback: $_"
-                    try { & dism /English /Cleanup-Wim 2>&1 | ForEach-Object { Log $_ } }
+                    try { & dism /English /Cleanup-Wim | ForEach-Object { Log $_ } }
                     catch { Log "Warning: DISM /Cleanup-Wim also failed: $_" }
                 }
             }
@@ -2273,8 +2243,8 @@ function Invoke-WinUtilISOCleanAndReset {
                 Log "Scanning files to delete in: $workDir"
                 SetProgress "Scanning files..." 5
 
-                $allFiles = @(Get-ChildItem -Path $workDir -File -Recurse -Force -ErrorAction SilentlyContinue)
-                $allDirs  = @(Get-ChildItem -Path $workDir -Directory -Recurse -Force -ErrorAction SilentlyContinue |
+                $allFiles = @(Get-ChildItem -Path $workDir -File -Recurse -Force)
+                $allDirs  = @(Get-ChildItem -Path $workDir -Directory -Recurse -Force |
                     Sort-Object { $_.FullName.Length } -Descending)
                 $total   = $allFiles.Count
                 $deleted = 0
@@ -2282,7 +2252,7 @@ function Invoke-WinUtilISOCleanAndReset {
                 Log "Found $total files to delete."
 
                 foreach ($f in $allFiles) {
-                    try { Remove-Item -Path $f.FullName -Force -ErrorAction Stop } catch { Log "WARNING: could not delete $($f.FullName): $_" }
+                    try { Remove-Item -Path $f.FullName -Force } catch { Log "WARNING: could not delete $($f.FullName): $_" }
                     $deleted++
                     if ($deleted % 100 -eq 0 -or $deleted -eq $total) {
                         $pct = [math]::Round(($deleted / [Math]::Max($total, 1)) * 85) + 5
@@ -2291,10 +2261,10 @@ function Invoke-WinUtilISOCleanAndReset {
                 }
 
                 foreach ($d in $allDirs) {
-                    try { Remove-Item -Path $d.FullName -Force -ErrorAction SilentlyContinue } catch {}
+                    try { Remove-Item -Path $d.FullName -Force } catch {}
                 }
 
-                try { Remove-Item -Path $workDir -Recurse -Force -ErrorAction Stop } catch {}
+                try { Remove-Item -Path $workDir -Recurse -Force } catch {}
 
                 if (Test-Path $workDir) {
                     Log "WARNING: some items could not be deleted in $workDir"
@@ -2302,7 +2272,7 @@ function Invoke-WinUtilISOCleanAndReset {
                     Log "Temp directory deleted successfully."
                 }
             } else {
-                Log "No temp directory found ? resetting UI."
+                Log "No temp directory found ??? resetting UI."
             }
 
             SetProgress "Resetting UI..." 95
@@ -2343,9 +2313,9 @@ function Invoke-WinUtilISOCleanAndReset {
                 $sync["WPFWin11ISOCleanResetButton"].IsEnabled = $true
             })
         }
-    }) | Out-Null
+    })
 
-    $script.BeginInvoke() | Out-Null
+    $script.BeginInvoke()
 }
 
 function Invoke-WinUtilISOExport {
@@ -2371,10 +2341,10 @@ function Invoke-WinUtilISOExport {
     $outputISO = $dlg.FileName
 
     # Locate oscdimg.exe (Windows ADK or winget per-user install)
-    $oscdimg = Get-ChildItem "C:\Program Files (x86)\Windows Kits" -Recurse -Filter "oscdimg.exe" -ErrorAction SilentlyContinue |
+    $oscdimg = Get-ChildItem "C:\Program Files (x86)\Windows Kits" -Recurse -Filter "oscdimg.exe" |
                Select-Object -First 1 -ExpandProperty FullName
     if (-not $oscdimg) {
-        $oscdimg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter "oscdimg.exe" -ErrorAction SilentlyContinue |
+        $oscdimg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter "oscdimg.exe" |
                    Where-Object { $_.FullName -match 'Microsoft\.OSCDIMG' } |
                    Select-Object -First 1 -ExpandProperty FullName
     }
@@ -2385,10 +2355,10 @@ function Invoke-WinUtilISOExport {
             # First ensure winget is installed and operational
             Install-WinUtilWinget
 
-            $winget = Get-Command winget -ErrorAction Stop
-            $result = & $winget install -e --id Microsoft.OSCDIMG --accept-package-agreements --accept-source-agreements 2>&1
+            $winget = Get-Command winget
+            $result = & $winget install -e --id Microsoft.OSCDIMG --accept-package-agreements --accept-source-agreements
             Write-Win11ISOLog "winget output: $result"
-            $oscdimg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter "oscdimg.exe" -ErrorAction SilentlyContinue |
+            $oscdimg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter "oscdimg.exe" |
                        Where-Object { $_.FullName -match 'Microsoft\.OSCDIMG' } |
                        Select-Object -First 1 -ExpandProperty FullName
         } catch {
@@ -2451,7 +2421,7 @@ function Invoke-WinUtilISOExport {
 
             $proc = [System.Diagnostics.Process]::new()
             $proc.StartInfo = $psi
-            $proc.Start() | Out-Null
+            $proc.Start()
 
             # Stream stdout line-by-line as oscdimg runs
             while (-not $proc.StandardOutput.EndOfStream) {
@@ -2495,9 +2465,9 @@ function Invoke-WinUtilISOExport {
                 $sync["WPFWin11ISOChooseISOButton"].IsEnabled = $true
             })
         }
-    }) | Out-Null
+    })
 
-    $script.BeginInvoke() | Out-Null
+    $script.BeginInvoke()
 }
 function Invoke-WinUtilISOScript {
     <#
@@ -2585,31 +2555,31 @@ function Invoke-WinUtilISOScript {
 
     function Add-DriversToImage {
         param ([string]$MountPath, [string]$DriverDir, [string]$Label = "image", [scriptblock]$Logger)
-        & dism /English "/image:$MountPath" /Add-Driver "/Driver:$DriverDir" /Recurse 2>&1 |
+        & dism /English "/image:$MountPath" /Add-Driver "/Driver:$DriverDir" /Recurse |
             ForEach-Object { & $Logger "  dism[$Label]: $_" }
     }
 
     function Invoke-BootWimInject {
         param ([string]$BootWimPath, [string]$DriverDir, [scriptblock]$Logger)
-        Set-ItemProperty -Path $BootWimPath -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $BootWimPath -Name IsReadOnly -Value $false
         $mountDir = Join-Path $env:TEMP "WinUtil_BootMount_$(Get-Random)"
-        New-Item -Path $mountDir -ItemType Directory -Force | Out-Null
+        New-Item -Path $mountDir -ItemType Directory -Force
         try {
             & $Logger "Mounting boot.wim (index 2) for driver injection..."
-            Mount-WindowsImage -ImagePath $BootWimPath -Index 2 -Path $mountDir -ErrorAction Stop | Out-Null
+            Mount-WindowsImage -ImagePath $BootWimPath -Index 2 -Path $mountDir
             Add-DriversToImage -MountPath $mountDir -DriverDir $DriverDir -Label "boot" -Logger $Logger
             & $Logger "Saving boot.wim..."
-            Dismount-WindowsImage -Path $mountDir -Save -ErrorAction Stop | Out-Null
+            Dismount-WindowsImage -Path $mountDir -Save
             & $Logger "boot.wim driver injection complete."
         } catch {
             & $Logger "Warning: boot.wim driver injection failed: $_"
-            try { Dismount-WindowsImage -Path $mountDir -Discard -ErrorAction SilentlyContinue | Out-Null } catch {}
+            try { Dismount-WindowsImage -Path $mountDir -Discard } catch {}
         } finally {
-            Remove-Item -Path $mountDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $mountDir -Recurse -Force
         }
     }
 
-    # ?? 1. Remove provisioned AppX packages ??????????????????????????????????
+    # ?????? 1. Remove provisioned AppX packages ??????????????????????????????????????????????????????????????????????????????????????????????????????
     & $Log "Removing provisioned AppX packages..."
 
     $packages = & dism /English "/image:$ScratchDir" /Get-ProvisionedAppxPackages |
@@ -2640,13 +2610,13 @@ function Invoke-WinUtilISOScript {
     $packages | Where-Object { $pkg = $_; $packagePrefixes | Where-Object { $pkg -like "*$_*" } } |
         ForEach-Object { & dism /English "/image:$ScratchDir" /Remove-ProvisionedAppxPackage "/PackageName:$_" }
 
-    # ?? 2. Inject current system drivers (optional) ???????????????????????????
+    # ?????? 2. Inject current system drivers (optional) ?????????????????????????????????????????????????????????????????????????????????
     if ($InjectCurrentSystemDrivers) {
         & $Log "Exporting all drivers from running system..."
         $driverExportRoot = Join-Path $env:TEMP "WinUtil_DriverExport_$(Get-Random)"
-        New-Item -Path $driverExportRoot -ItemType Directory -Force | Out-Null
+        New-Item -Path $driverExportRoot -ItemType Directory -Force
         try {
-            Export-WindowsDriver -Online -Destination $driverExportRoot | Out-Null
+            Export-WindowsDriver -Online -Destination $driverExportRoot
 
             & $Log "Injecting current system drivers into install.wim..."
             Add-DriversToImage -MountPath $ScratchDir -DriverDir $driverExportRoot -Label "install" -Logger $Log
@@ -2658,19 +2628,19 @@ function Invoke-WinUtilISOScript {
                     & $Log "Injecting current system drivers into boot.wim..."
                     Invoke-BootWimInject -BootWimPath $bootWim -DriverDir $driverExportRoot -Logger $Log
                 } else {
-                    & $Log "Warning: boot.wim not found ? skipping boot.wim driver injection."
+                    & $Log "Warning: boot.wim not found ??? skipping boot.wim driver injection."
                 }
             }
         } catch {
             & $Log "Error during driver export/injection: $_"
         } finally {
-            Remove-Item -Path $driverExportRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $driverExportRoot -Recurse -Force
         }
     } else {
         & $Log "Driver injection skipped."
     }
 
-    # ?? 3. Registry tweaks ????????????????????????????????????????????????????
+    # ?????? 3. Registry tweaks ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
     & $Log "Loading offline registry hives..."
     reg load HKLM\zCOMPONENTS "$ScratchDir\Windows\System32\config\COMPONENTS"
     reg load HKLM\zDEFAULT    "$ScratchDir\Windows\System32\config\default"
@@ -2732,7 +2702,7 @@ function Invoke-WinUtilISOScript {
                     $absPath  = $fileNode.GetAttribute("path")
                     $relPath  = $absPath -replace '^[A-Za-z]:[/\\]', ''
                     $destPath = Join-Path $ScratchDir $relPath
-                    New-Item -Path (Split-Path $destPath -Parent) -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+                    New-Item -Path (Split-Path $destPath -Parent) -ItemType Directory -Force
 
                     $ext = [IO.Path]::GetExtension($destPath).ToLower()
                     $encoding = switch ($ext) {
@@ -2744,7 +2714,7 @@ function Invoke-WinUtilISOScript {
                     & $Log "Pre-staged setup script: $relPath"
                 }
             } else {
-                & $Log "Warning: no <Extensions><File> nodes found in autounattend.xml ? setup scripts not pre-staged."
+                & $Log "Warning: no <Extensions><File> nodes found in autounattend.xml ??? setup scripts not pre-staged."
             }
         } catch {
             & $Log "Warning: could not pre-stage setup scripts from autounattend.xml: $_"
@@ -2756,7 +2726,7 @@ function Invoke-WinUtilISOScript {
             & $Log "Written autounattend.xml to ISO root ($isoDest)."
         }
     } else {
-        & $Log "Warning: autounattend.xml content is empty ? skipping OOBE bypass file."
+        & $Log "Warning: autounattend.xml content is empty ??? skipping OOBE bypass file."
     }
 
     & $Log "Disabling reserved storage..."
@@ -2824,26 +2794,26 @@ function Invoke-WinUtilISOScript {
     reg unload HKLM\zSOFTWARE
     reg unload HKLM\zSYSTEM
 
-    # ?? 4. Delete scheduled task definition files ?????????????????????????????
+    # ?????? 4. Delete scheduled task definition files ???????????????????????????????????????????????????????????????????????????????????????
     & $Log "Deleting scheduled task definition files..."
     $tasksPath = "$ScratchDir\Windows\System32\Tasks"
-    Remove-Item "$tasksPath\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser" -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\Customer Experience Improvement Program"                  -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\Application Experience\ProgramDataUpdater"               -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\Chkdsk\Proxy"                                            -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\Windows Error Reporting\QueueReporting"                  -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\InstallService"                                          -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\UpdateOrchestrator"                                      -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\UpdateAssistant"                                         -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\WaaSMedic"                                               -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\Windows\WindowsUpdate"                                           -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$tasksPath\Microsoft\WindowsUpdate"                                                   -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "$tasksPath\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser" -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\Customer Experience Improvement Program"                  -Recurse -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\Application Experience\ProgramDataUpdater"               -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\Chkdsk\Proxy"                                            -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\Windows Error Reporting\QueueReporting"                  -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\InstallService"                                          -Recurse -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\UpdateOrchestrator"                                      -Recurse -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\UpdateAssistant"                                         -Recurse -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\WaaSMedic"                                               -Recurse -Force
+    Remove-Item "$tasksPath\Microsoft\Windows\WindowsUpdate"                                           -Recurse -Force
+    Remove-Item "$tasksPath\Microsoft\WindowsUpdate"                                                   -Recurse -Force
     & $Log "Scheduled task files deleted."
 
-    # ?? 5. Remove ISO support folder ?????????????????????????????????????????
+    # ?????? 5. Remove ISO support folder ???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
     if ($ISOContentsDir -and (Test-Path $ISOContentsDir)) {
         & $Log "Removing ISO support\ folder..."
-        Remove-Item -Path (Join-Path $ISOContentsDir "support") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $ISOContentsDir "support") -Recurse -Force
         & $Log "ISO support\ folder removed."
     }
 }
@@ -2942,7 +2912,7 @@ function Invoke-WinUtilISOWriteUSB {
         }
 
         function Get-FreeDriveLetter {
-            $used = (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue).Name
+            $used = (Get-PSDrive -PSProvider FileSystem).Name
             foreach ($c in [char[]](68..90)) {
                 if ($used -notcontains [string]$c) { return $c }
             }
@@ -2956,29 +2926,29 @@ function Invoke-WinUtilISOWriteUSB {
             $dpFile1 = Join-Path $env:TEMP "winutil_diskpart_$(Get-Random).txt"
             "select disk $diskNum`nclean`nexit" | Set-Content -Path $dpFile1 -Encoding ASCII
             Log "Running diskpart clean on Disk $diskNum..."
-            $dpCleanOut = diskpart /s $dpFile1 2>&1
+            $dpCleanOut = diskpart /s $dpFile1
             $dpCleanOut | Where-Object { $_ -match '\S' } | ForEach-Object { Log "  diskpart: $_" }
-            Remove-Item $dpFile1 -Force -ErrorAction SilentlyContinue
+            Remove-Item $dpFile1 -Force
 
             if (($dpCleanOut -join ' ') -match 'device is not ready') {
                 Log "Disk $diskNum was not ready; waiting 5 seconds and retrying clean..."
                 Start-Sleep -Seconds 5
-                Update-Disk -Number $diskNum -ErrorAction SilentlyContinue
+                Update-Disk -Number $diskNum
                 $dpFile1b = Join-Path $env:TEMP "winutil_diskpart_$(Get-Random).txt"
                 "select disk $diskNum`nclean`nexit" | Set-Content -Path $dpFile1b -Encoding ASCII
-                diskpart /s $dpFile1b 2>&1 | Where-Object { $_ -match '\S' } | ForEach-Object { Log "  diskpart: $_" }
-                Remove-Item $dpFile1b -Force -ErrorAction SilentlyContinue
+                diskpart /s $dpFile1b | Where-Object { $_ -match '\S' } | ForEach-Object { Log "  diskpart: $_" }
+                Remove-Item $dpFile1b -Force
             }
 
             # Phase 2: Initialize as GPT
             Start-Sleep -Seconds 2
-            Update-Disk -Number $diskNum -ErrorAction SilentlyContinue
-            $diskObj = Get-Disk -Number $diskNum -ErrorAction Stop
+            Update-Disk -Number $diskNum
+            $diskObj = Get-Disk -Number $diskNum
             if ($diskObj.PartitionStyle -eq 'RAW') {
-                Initialize-Disk -Number $diskNum -PartitionStyle GPT -ErrorAction Stop
+                Initialize-Disk -Number $diskNum -PartitionStyle GPT
                 Log "Disk $diskNum initialized as GPT."
             } else {
-                Set-Disk -Number $diskNum -PartitionStyle GPT -ErrorAction Stop
+                Set-Disk -Number $diskNum -PartitionStyle GPT
                 Log "Disk $diskNum converted to GPT (was $($diskObj.PartitionStyle))."
             }
 
@@ -2987,7 +2957,7 @@ function Invoke-WinUtilISOWriteUSB {
             $volLabel = "W11-" + (Get-Date).ToString('yyMMdd')
             $dpFile2  = Join-Path $env:TEMP "winutil_diskpart2_$(Get-Random).txt"
             $maxFat32PartitionMB = 32768
-            $diskSizeMB = [int][Math]::Floor((Get-Disk -Number $diskNum -ErrorAction Stop).Size / 1MB)
+            $diskSizeMB = [int][Math]::Floor((Get-Disk -Number $diskNum).Size / 1MB)
             $createPartitionCommand = "create partition primary"
             if ($diskSizeMB -gt $maxFat32PartitionMB) {
                 $createPartitionCommand = "create partition primary size=$maxFat32PartitionMB"
@@ -3000,14 +2970,14 @@ function Invoke-WinUtilISOWriteUSB {
                 "exit"
             ) | Set-Content -Path $dpFile2 -Encoding ASCII
             Log "Creating partitions on Disk $diskNum..."
-            diskpart /s $dpFile2 2>&1 | Where-Object { $_ -match '\S' } | ForEach-Object { Log "  diskpart: $_" }
-            Remove-Item $dpFile2 -Force -ErrorAction SilentlyContinue
+            diskpart /s $dpFile2 | Where-Object { $_ -match '\S' } | ForEach-Object { Log "  diskpart: $_" }
+            Remove-Item $dpFile2 -Force
 
             SetProgress "Formatting USB partition..." 25
             Start-Sleep -Seconds 3
-            Update-Disk -Number $diskNum -ErrorAction SilentlyContinue
+            Update-Disk -Number $diskNum
 
-            $partitions = Get-Partition -DiskNumber $diskNum -ErrorAction Stop
+            $partitions = Get-Partition -DiskNumber $diskNum
             Log "Partitions on Disk $diskNum after creation: $($partitions.Count)"
             foreach ($p in $partitions) {
                 Log "  Partition $($p.PartitionNumber)  Type=$($p.Type)  Letter=$($p.DriveLetter)  Size=$([math]::Round($p.Size/1MB))MB"
@@ -3022,14 +2992,14 @@ function Invoke-WinUtilISOWriteUSB {
             # with 'no volume selected' when the partition has never been formatted before)
             Log "Formatting Partition $($winpePart.PartitionNumber) as FAT32 (label: $volLabel)..."
             Get-Partition -DiskNumber $diskNum -PartitionNumber $winpePart.PartitionNumber |
-                Format-Volume -FileSystem FAT32 -NewFileSystemLabel $volLabel -Force -Confirm:$false | Out-Null
+                Format-Volume -FileSystem FAT32 -NewFileSystemLabel $volLabel -Force -Confirm:$false
             Log "Partition $($winpePart.PartitionNumber) formatted as FAT32."
 
             SetProgress "Assigning drive letters..." 30
             Start-Sleep -Seconds 2
-            Update-Disk -Number $diskNum -ErrorAction SilentlyContinue
+            Update-Disk -Number $diskNum
 
-            try { Remove-PartitionAccessPath -DiskNumber $diskNum -PartitionNumber $winpePart.PartitionNumber -AccessPath "$($winpePart.DriveLetter):" -ErrorAction SilentlyContinue } catch {}
+            try { Remove-PartitionAccessPath -DiskNumber $diskNum -PartitionNumber $winpePart.PartitionNumber -AccessPath "$($winpePart.DriveLetter):" } catch {}
             $usbLetter = Get-FreeDriveLetter
             if (-not $usbLetter) { throw "No free drive letters (D-Z) available to assign to the USB data partition." }
             Set-Partition -DiskNumber $diskNum -PartitionNumber $winpePart.PartitionNumber -NewDriveLetter $usbLetter
@@ -3046,9 +3016,9 @@ function Invoke-WinUtilISOWriteUSB {
             if (-not (Test-Path $usbDrive)) { throw "Drive $usbDrive is not accessible after letter assignment." }
             Log "USB data partition: $usbDrive"
 
-            $contentSizeBytes = (Get-ChildItem -LiteralPath $contentsDir -File -Recurse -Force -ErrorAction Stop | Measure-Object -Property Length -Sum).Sum
+            $contentSizeBytes = (Get-ChildItem -LiteralPath $contentsDir -File -Recurse -Force | Measure-Object -Property Length -Sum).Sum
             if (-not $contentSizeBytes) { $contentSizeBytes = 0 }
-            $usbVolume = Get-Volume -DriveLetter $usbLetter -ErrorAction Stop
+            $usbVolume = Get-Volume -DriveLetter $usbLetter
             $partitionCapacityBytes = [int64]$usbVolume.Size
             $partitionFreeBytes = [int64]$usbVolume.SizeRemaining
 
@@ -3075,7 +3045,7 @@ function Invoke-WinUtilISOWriteUSB {
                 if ($wimSizeMB -gt 3800) {
                     Log "install.wim is $wimSizeMB MB - splitting for FAT32 compatibility... This will take several minutes."
                     $splitDest = Join-Path $usbDrive "sources\install.swm"
-                    New-Item -ItemType Directory -Path (Split-Path $splitDest) -Force | Out-Null
+                    New-Item -ItemType Directory -Path (Split-Path $splitDest) -Force
                     Split-WindowsImage -ImagePath $installWim -SplitImagePath $splitDest -FileSize 3800 -CheckIntegrity
                     Log "install.wim split complete."
                     Log "Copying remaining files to USB..."
@@ -3111,9 +3081,9 @@ function Invoke-WinUtilISOWriteUSB {
                 $sync["WPFWin11ISOWriteUSBButton"].IsEnabled = $true
             })
         }
-    }) | Out-Null
+    })
 
-    $script.BeginInvoke() | Out-Null
+    $script.BeginInvoke()
 }
 function Invoke-WinUtilScript {
     <#
@@ -3458,7 +3428,6 @@ function Invoke-WinUtilTweaks {
     if($undo) {
         $Values = @{
             Registry = "OriginalValue"
-            ScheduledTask = "OriginalState"
             Service = "OriginalType"
             ScriptType = "UndoScript"
         }
@@ -3466,16 +3435,9 @@ function Invoke-WinUtilTweaks {
     } else {
         $Values = @{
             Registry = "Value"
-            ScheduledTask = "State"
             Service = "StartupType"
             OriginalService = "OriginalType"
             ScriptType = "InvokeScript"
-        }
-    }
-    if($sync.configs.tweaks.$CheckBox.ScheduledTask) {
-        $sync.configs.tweaks.$CheckBox.ScheduledTask | ForEach-Object {
-            Write-Debug "$($psitem.Name) and state is $($psitem.$($values.ScheduledTask))"
-            Set-WinUtilScheduledTask -Name $psitem.Name -State $psitem.$($values.ScheduledTask)
         }
     }
     if($sync.configs.tweaks.$CheckBox.service) {
@@ -3536,12 +3498,11 @@ function Invoke-WinUtilTweaks {
     }
 }
 function Invoke-WinUtilUninstallPSProfile {
-    if (Test-Path ($Profile + '.bak')) {
-        Remove-Item $Profile
-        Rename-Item ($Profile + '.bak') -NewName $Profile
-    }
-    else {
-        Remove-Item $Profile
+
+    if (Test-Path ($Profile + ".bak")) {
+        Move-Item -Path ($Profile + ".bak") -Destination $Profile
+    } else {
+        Remove-Item -Path $Profile
     }
 
     Write-Host "Successfully uninstalled CTT PowerShell Profile." -ForegroundColor Green
@@ -3629,7 +3590,7 @@ function Reset-WPFCheckBoxes {
 
     if($doToggles) {
         # Restore toggle switch states from imported config.
-        # Only act on toggles that are explicitly listed in the import ? toggles absent
+        # Only act on toggles that are explicitly listed in the import ??? toggles absent
         # from the export file were not part of the saved config and should keep whatever
         # state the live system already has (set during UI initialisation via Get-WinUtilToggleStatus).
         $importedToggles = $sync.selectedToggles
@@ -3841,48 +3802,6 @@ function Set-WinUtilRegistry {
        Write-Warning $psitem.Exception.Message
     } catch {
         Write-Warning "Unable to set $Name due to unhandled exception."
-        Write-Warning $psitem.Exception.StackTrace
-    }
-}
-function Set-WinUtilScheduledTask {
-    <#
-
-    .SYNOPSIS
-        Enables/Disables the provided Scheduled Task
-
-    .PARAMETER Name
-        The path to the Scheduled Task
-
-    .PARAMETER State
-        The State to set the Task to
-
-    .EXAMPLE
-        Set-WinUtilScheduledTask -Name "Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser" -State "Disabled"
-
-    #>
-    param (
-        $Name,
-        $State
-    )
-
-    try {
-        if($State -eq "Disabled") {
-            Write-Host "Disabling Scheduled Task $Name"
-            Disable-ScheduledTask -TaskName $Name -ErrorAction Stop
-        }
-        if($State -eq "Enabled") {
-            Write-Host "Enabling Scheduled Task $Name"
-            Enable-ScheduledTask -TaskName $Name -ErrorAction Stop
-        }
-    } catch [System.Exception] {
-        if($psitem.Exception.Message -like "*The system cannot find the file specified*") {
-            Write-Warning "Scheduled Task $Name was not found."
-        } else {
-            Write-Warning "Unable to set $Name due to unhandled exception."
-            Write-Warning $psitem.Exception.Message
-        }
-    } catch {
-        Write-Warning "Unable to run script for $name due to unhandled exception."
         Write-Warning $psitem.Exception.StackTrace
     }
 }
@@ -4370,27 +4289,6 @@ function Test-WinUtilPackageManager {
     }
 
     return $status
-}
-Function Update-WinUtilProgramWinget {
-
-    <#
-
-    .SYNOPSIS
-        This will update all programs using WinGet
-
-    #>
-
-    [ScriptBlock]$wingetinstall = {
-
-        $host.ui.RawUI.WindowTitle = """WinGet Install"""
-
-        Start-Transcript "$logdir\winget-update_$dateTime.log" -Append
-        winget upgrade --all --accept-source-agreements --accept-package-agreements --scope=machine --silent
-
-    }
-
-    $global:WinGetInstall = Start-Process -Verb runas powershell -ArgumentList "-command invoke-command -scriptblock {$wingetinstall} -argumentlist '$($ProgramsToInstall -join ",")'" -PassThru
-
 }
 function Update-WinUtilSelections {
     <#
@@ -5273,39 +5171,24 @@ function Invoke-WPFInstall {
     }
 }
 function Invoke-WPFInstallUpgrade {
-    <#
-
-    .SYNOPSIS
-        Invokes the function that upgrades all installed programs
-
-    #>
     if ($sync.ChocoRadioButton.IsChecked) {
-        Install-WinUtilChoco
-        $chocoUpgradeStatus = (Start-Process "choco" -ArgumentList "upgrade all -y" -Wait -PassThru -NoNewWindow).ExitCode
-        if ($chocoUpgradeStatus -eq 0) {
-            Write-Host "Upgrade Successful"
-        }
-        else{
-            Write-Host "Error Occurred. Return Code: $chocoUpgradeStatus"
-        }
-    }
-    else{
-        if((Test-WinUtilPackageManager -winget) -eq "not-installed") {
-            return
-        }
-
-        if(Get-WinUtilInstallerProcess -Process $global:WinGetInstall) {
-            $msg = "[Invoke-WPFInstallUpgrade] Install process is currently running. Please check for a powershell window labeled 'Winget Install'"
-            [System.Windows.MessageBox]::Show($msg, "Winutil", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
-            return
-        }
-
-        Update-WinUtilProgramWinget
+        Install-WinUtilChoco # Ensure Chocolatey is installed before upgrading
 
         Write-Host "==========================================="
         Write-Host "--           Updates started            ---"
         Write-Host "-- You can close this window if desired ---"
         Write-Host "==========================================="
+
+        Start-Process -FilePath powershell.exe -ArgumentList 'choco upgrade all -y'
+    } else {
+        Install-WinUtilWinget # Ensure WinGet is installed before upgrading
+
+        Write-Host "==========================================="
+        Write-Host "--           Updates started            ---"
+        Write-Host "-- You can close this window if desired ---"
+        Write-Host "==========================================="
+
+        Start-Process -FilePath powershell.exe -ArgumentList 'winget upgrade --all --include-unknown --silent --accept-source-agreements --accept-package-agreements'
     }
 }
 function Invoke-WPFOOSU {
@@ -10288,3000 +10171,2242 @@ $sync.configs.applications = @'
 '@ | ConvertFrom-Json
 $sync.configs.appnavigation = @'
 {
-  "WPFInstall": {
-    "Content": "Install/Upgrade Applications",
-    "Category": "____Actions",
-    "Type": "Button",
-    "Order": "1",
-    "Description": "Install or upgrade the selected applications"
-  },
-  "WPFUninstall": {
-    "Content": "Uninstall Applications",
-    "Category": "____Actions",
-    "Type": "Button",
-    "Order": "2",
-    "Description": "Uninstall the selected applications"
-  },
-  "WPFInstallUpgrade": {
-    "Content": "Upgrade all Applications",
-    "Category": "____Actions",
-    "Type": "Button",
-    "Order": "3",
-    "Description": "Upgrade all applications to the latest version"
-  },
-  "WingetRadioButton": {
-    "Content": "WinGet",
-    "Category": "__Package Manager",
-    "Type": "RadioButton",
-    "GroupName": "PackageManagerGroup",
-    "Checked": true,
-    "Order": "1",
-    "Description": "Use WinGet for package management"
-  },
-  "ChocoRadioButton": {
-    "Content": "Chocolatey",
-    "Category": "__Package Manager",
-    "Type": "RadioButton",
-    "GroupName": "PackageManagerGroup",
-    "Checked": false,
-    "Order": "2",
-    "Description": "Use Chocolatey for package management"
-  },
-  "WPFCollapseAllCategories": {
-    "Content": "Collapse All Categories",
-    "Category": "__Selection",
-    "Type": "Button",
-    "Order": "1",
-    "Description": "Collapse all application categories"
-  },
-  "WPFExpandAllCategories": {
-    "Content": "Expand All Categories",
-    "Category": "__Selection",
-    "Type": "Button",
-    "Order": "2",
-    "Description": "Expand all application categories"
-  },
-  "WPFClearInstallSelection": {
-    "Content": "Clear Selection",
-    "Category": "__Selection",
-    "Type": "Button",
-    "Order": "3",
-    "Description": "Clear the selection of applications"
-  },
-  "WPFGetInstalled": {
-    "Content": "Show Installed Apps",
-    "Category": "__Selection",
-    "Type": "Button",
-    "Order": "4",
-    "Description": "Show installed applications"
-  },
-  "WPFselectedAppsButton": {
-    "Content": "Selected Apps: 0",
-    "Category": "__Selection",
-    "Type": "Button",
-    "Order": "5",
-    "Description": "Show the selected applications"
-  },
-  "WPFToggleFOSSHighlight": {
-    "Content": "Highlight FOSS",
-    "Category": "__Selection",
-    "Type": "Toggle",
-    "Checked": true,
-    "Order": "6",
-    "Description": "Toggle the green highlight for FOSS applications"
-  }
+    "WPFInstall":  {
+                       "Content":  "Install/Upgrade Applications",
+                       "Category":  "____Actions",
+                       "Type":  "Button",
+                       "Order":  "1",
+                       "Description":  "Install or upgrade the selected applications"
+                   },
+    "WPFUninstall":  {
+                         "Content":  "Uninstall Applications",
+                         "Category":  "____Actions",
+                         "Type":  "Button",
+                         "Order":  "2",
+                         "Description":  "Uninstall the selected applications"
+                     },
+    "WPFInstallUpgrade":  {
+                              "Content":  "Upgrade all Applications",
+                              "Category":  "____Actions",
+                              "Type":  "Button",
+                              "Order":  "3",
+                              "Description":  "Upgrade all applications to the latest version"
+                          },
+    "WingetRadioButton":  {
+                              "Content":  "WinGet",
+                              "Category":  "__Package Manager",
+                              "Type":  "RadioButton",
+                              "GroupName":  "PackageManagerGroup",
+                              "Checked":  true,
+                              "Order":  "1",
+                              "Description":  "Use WinGet for package management"
+                          },
+    "ChocoRadioButton":  {
+                             "Content":  "Chocolatey",
+                             "Category":  "__Package Manager",
+                             "Type":  "RadioButton",
+                             "GroupName":  "PackageManagerGroup",
+                             "Checked":  false,
+                             "Order":  "2",
+                             "Description":  "Use Chocolatey for package management"
+                         },
+    "WPFCollapseAllCategories":  {
+                                     "Content":  "Collapse All Categories",
+                                     "Category":  "__Selection",
+                                     "Type":  "Button",
+                                     "Order":  "1",
+                                     "Description":  "Collapse all application categories"
+                                 },
+    "WPFExpandAllCategories":  {
+                                   "Content":  "Expand All Categories",
+                                   "Category":  "__Selection",
+                                   "Type":  "Button",
+                                   "Order":  "2",
+                                   "Description":  "Expand all application categories"
+                               },
+    "WPFClearInstallSelection":  {
+                                     "Content":  "Clear Selection",
+                                     "Category":  "__Selection",
+                                     "Type":  "Button",
+                                     "Order":  "3",
+                                     "Description":  "Clear the selection of applications"
+                                 },
+    "WPFGetInstalled":  {
+                            "Content":  "Show Installed Apps",
+                            "Category":  "__Selection",
+                            "Type":  "Button",
+                            "Order":  "4",
+                            "Description":  "Show installed applications"
+                        },
+    "WPFselectedAppsButton":  {
+                                  "Content":  "Selected Apps: 0",
+                                  "Category":  "__Selection",
+                                  "Type":  "Button",
+                                  "Order":  "5",
+                                  "Description":  "Show the selected applications"
+                              },
+    "WPFToggleFOSSHighlight":  {
+                                   "Content":  "Highlight FOSS",
+                                   "Category":  "__Selection",
+                                   "Type":  "Toggle",
+                                   "Checked":  true,
+                                   "Order":  "6",
+                                   "Description":  "Toggle the green highlight for FOSS applications"
+                               }
 }
 '@ | ConvertFrom-Json
 $sync.configs.dns = @'
 {
-  "Google": {
-    "Primary": "8.8.8.8",
-    "Secondary": "8.8.4.4",
-    "Primary6": "2001:4860:4860::8888",
-    "Secondary6": "2001:4860:4860::8844"
-  },
-  "Cloudflare": {
-    "Primary": "1.1.1.1",
-    "Secondary": "1.0.0.1",
-    "Primary6": "2606:4700:4700::1111",
-    "Secondary6": "2606:4700:4700::1001"
-  },
-  "Cloudflare_Malware": {
-    "Primary": "1.1.1.2",
-    "Secondary": "1.0.0.2",
-    "Primary6": "2606:4700:4700::1112",
-    "Secondary6": "2606:4700:4700::1002"
-  },
-  "Cloudflare_Malware_Adult": {
-    "Primary": "1.1.1.3",
-    "Secondary": "1.0.0.3",
-    "Primary6": "2606:4700:4700::1113",
-    "Secondary6": "2606:4700:4700::1003"
-  },
-  "Open_DNS": {
-    "Primary": "208.67.222.222",
-    "Secondary": "208.67.220.220",
-    "Primary6": "2620:119:35::35",
-    "Secondary6": "2620:119:53::53"
-  },
-  "Quad9": {
-    "Primary": "9.9.9.9",
-    "Secondary": "149.112.112.112",
-    "Primary6": "2620:fe::fe",
-    "Secondary6": "2620:fe::9"
-  },
-  "AdGuard_Ads_Trackers": {
-    "Primary": "94.140.14.14",
-    "Secondary": "94.140.15.15",
-    "Primary6": "2a10:50c0::ad1:ff",
-    "Secondary6": "2a10:50c0::ad2:ff"
-  },
-  "AdGuard_Ads_Trackers_Malware_Adult": {
-    "Primary": "94.140.14.15",
-    "Secondary": "94.140.15.16",
-    "Primary6": "2a10:50c0::bad1:ff",
-    "Secondary6": "2a10:50c0::bad2:ff"
-  }
+    "Google":  {
+                   "Primary":  "8.8.8.8",
+                   "Secondary":  "8.8.4.4",
+                   "Primary6":  "2001:4860:4860::8888",
+                   "Secondary6":  "2001:4860:4860::8844"
+               },
+    "Cloudflare":  {
+                       "Primary":  "1.1.1.1",
+                       "Secondary":  "1.0.0.1",
+                       "Primary6":  "2606:4700:4700::1111",
+                       "Secondary6":  "2606:4700:4700::1001"
+                   },
+    "Cloudflare_Malware":  {
+                               "Primary":  "1.1.1.2",
+                               "Secondary":  "1.0.0.2",
+                               "Primary6":  "2606:4700:4700::1112",
+                               "Secondary6":  "2606:4700:4700::1002"
+                           },
+    "Cloudflare_Malware_Adult":  {
+                                     "Primary":  "1.1.1.3",
+                                     "Secondary":  "1.0.0.3",
+                                     "Primary6":  "2606:4700:4700::1113",
+                                     "Secondary6":  "2606:4700:4700::1003"
+                                 },
+    "Open_DNS":  {
+                     "Primary":  "208.67.222.222",
+                     "Secondary":  "208.67.220.220",
+                     "Primary6":  "2620:119:35::35",
+                     "Secondary6":  "2620:119:53::53"
+                 },
+    "Quad9":  {
+                  "Primary":  "9.9.9.9",
+                  "Secondary":  "149.112.112.112",
+                  "Primary6":  "2620:fe::fe",
+                  "Secondary6":  "2620:fe::9"
+              },
+    "AdGuard_Ads_Trackers":  {
+                                 "Primary":  "94.140.14.14",
+                                 "Secondary":  "94.140.15.15",
+                                 "Primary6":  "2a10:50c0::ad1:ff",
+                                 "Secondary6":  "2a10:50c0::ad2:ff"
+                             },
+    "AdGuard_Ads_Trackers_Malware_Adult":  {
+                                               "Primary":  "94.140.14.15",
+                                               "Secondary":  "94.140.15.16",
+                                               "Primary6":  "2a10:50c0::bad1:ff",
+                                               "Secondary6":  "2a10:50c0::bad2:ff"
+                                           }
 }
 '@ | ConvertFrom-Json
 $sync.configs.feature = @'
 {
-  "WPFFeaturesdotnet": {
-    "Content": "All .Net Framework (2,3,4)",
-    "Description": ".NET and .NET Framework is a developer platform made up of tools, programming languages, and libraries for building many different types of applications.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [
-      "NetFx4-AdvSrvs",
-      "NetFx3"
-    ],
-    "InvokeScript": [],
-    "link": "https://winutil.christitus.com/dev/features/features/dotnet"
-  },
-  "WPFFixesNTPPool": {
-    "Content": "Configure NTP Server",
-    "Description": "Replaces the default Windows NTP server (time.windows.com) with pool.ntp.org for improved time synchronization accuracy and reliability.",
-    "category": "Fixes",
-    "panel": "1",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WPFFixesNTPPool",
-    "link": "https://winutil.christitus.com/dev/features/fixes/ntppool"
-  },
-  "WPFFeatureshyperv": {
-    "Content": "HyperV Virtualization",
-    "Description": "Hyper-V is a hardware virtualization product developed by Microsoft that allows users to create and manage virtual machines.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [
-      "Microsoft-Hyper-V-All"
-    ],
-    "InvokeScript": [
-      "bcdedit /set hypervisorschedulertype classic"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/features/hyperv"
-  },
-  "WPFFeatureslegacymedia": {
-    "Content": "Legacy Media (WMP, DirectPlay)",
-    "Description": "Enables legacy programs from previous versions of Windows.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [
-      "WindowsMediaPlayer",
-      "MediaPlayback",
-      "DirectPlay",
-      "LegacyComponents"
-    ],
-    "InvokeScript": [],
-    "link": "https://winutil.christitus.com/dev/features/features/legacymedia"
-  },
-  "WPFFeaturewsl": {
-    "Content": "Windows Subsystem for Linux",
-    "Description": "Windows Subsystem for Linux is an optional feature of Windows that allows Linux programs to run natively on Windows without the need for a separate virtual machine or dual booting.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [
-      "VirtualMachinePlatform",
-      "Microsoft-Windows-Subsystem-Linux"
-    ],
-    "InvokeScript": [],
-    "link": "https://winutil.christitus.com/dev/features/features/wsl"
-  },
-  "WPFFeaturenfs": {
-    "Content": "NFS - Network File System",
-    "Description": "Network File System (NFS) is a mechanism for storing files on a network.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [
-      "ServicesForNFS-ClientOnly",
-      "ClientForNFS-Infrastructure",
-      "NFS-Administration"
-    ],
-    "InvokeScript": [
-      "nfsadmin client stop",
-      "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default' -Name 'AnonymousUID' -Type DWord -Value 0",
-      "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default' -Name 'AnonymousGID' -Type DWord -Value 0",
-      "nfsadmin client start",
-      "nfsadmin client localhost config fileaccess=755 SecFlavors=+sys -krb5 -krb5i"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/features/nfs"
-  },
-  "WPFFeatureRegBackup": {
-    "Content": "Enable Daily Registry Backup Task 12.30am",
-    "Description": "Enables daily registry backup, previously disabled by Microsoft in Windows 10 1803.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [],
-    "InvokeScript": [
-      "\r\n      New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Configuration Manager' -Name 'EnablePeriodicBackup' -Type DWord -Value 1 -Force\r\n      New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Configuration Manager' -Name 'BackupCount' -Type DWord -Value 2 -Force\r\n      $action = New-ScheduledTaskAction -Execute 'schtasks' -Argument '/run /i /tn \"\\Microsoft\\Windows\\Registry\\RegIdleBackup\"'\r\n      $trigger = New-ScheduledTaskTrigger -Daily -At 00:30\r\n      Register-ScheduledTask -Action $action -Trigger $trigger -TaskName 'AutoRegBackup' -Description 'Create System Registry Backups' -User 'System'\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/features/features/regbackup"
-  },
-  "WPFFeatureEnableLegacyRecovery": {
-    "Content": "Enable Legacy F8 Boot Recovery",
-    "Description": "Enables Advanced Boot Options screen that lets you start Windows in advanced troubleshooting modes.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [],
-    "InvokeScript": [
-      "bcdedit /set bootmenupolicy legacy"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/features/enablelegacyrecovery"
-  },
-  "WPFFeatureDisableLegacyRecovery": {
-    "Content": "Disable Legacy F8 Boot Recovery",
-    "Description": "Disables Advanced Boot Options screen that lets you start Windows in advanced troubleshooting modes.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [],
-    "InvokeScript": [
-      "bcdedit /set bootmenupolicy standard"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/features/disablelegacyrecovery"
-  },
-  "WPFFeaturesSandbox": {
-    "Content": "Windows Sandbox",
-    "Description": "Windows Sandbox is a lightweight virtual machine that provides a temporary desktop environment to safely run applications and programs in isolation.",
-    "category": "Features",
-    "panel": "1",
-    "feature": [
-      "Containers-DisposableClientVM"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/features/sandbox"
-  },
-  "WPFFeatureInstall": {
-    "Content": "Install Features",
-    "category": "Features",
-    "panel": "1",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WPFFeatureInstall",
-    "link": "https://winutil.christitus.com/dev/features/features/install"
-  },
-  "WPFPanelAutologin": {
-    "Content": "Set Up Autologin",
-    "category": "Fixes",
-    "panel": "1",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WPFPanelAutologin",
-    "link": "https://winutil.christitus.com/dev/features/fixes/autologin"
-  },
-  "WPFFixesUpdate": {
-    "Content": "Reset Windows Update",
-    "category": "Fixes",
-    "panel": "1",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WPFFixesUpdate",
-    "link": "https://winutil.christitus.com/dev/features/fixes/update"
-  },
-  "WPFFixesNetwork": {
-    "Content": "Reset Network",
-    "category": "Fixes",
-    "panel": "1",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WPFFixesNetwork",
-    "link": "https://winutil.christitus.com/dev/features/fixes/network"
-  },
-  "WPFPanelDISM": {
-    "Content": "System Corruption Scan",
-    "category": "Fixes",
-    "panel": "1",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WPFSystemRepair",
-    "link": "https://winutil.christitus.com/dev/features/fixes/dism"
-  },
-  "WPFFixesWinget": {
-    "Content": "WinGet Reinstall",
-    "category": "Fixes",
-    "panel": "1",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WPFFixesWinget",
-    "link": "https://winutil.christitus.com/dev/features/fixes/winget"
-  },
-  "WPFPanelControl": {
-    "Content": "Control Panel",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "control"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/control"
-  },
-  "WPFPanelComputer": {
-    "Content": "Computer Management",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "compmgmt.msc"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/computer"
-  },
-  "WPFPanelNetwork": {
-    "Content": "Network Connections",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "ncpa.cpl"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/network"
-  },
-  "WPFPanelPower": {
-    "Content": "Power Panel",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "powercfg.cpl"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/power"
-  },
-  "WPFPanelPrinter": {
-    "Content": "Printer Panel",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "Start-Process 'shell:::{A8A91A66-3A7D-4424-8D24-04E180695C7A}'"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/printer"
-  },
-  "WPFPanelRegion": {
-    "Content": "Region",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "intl.cpl"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/region"
-  },
-  "WPFPanelRestore": {
-    "Content": "Windows Restore",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "rstrui.exe"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/restore"
-  },
-  "WPFPanelSound": {
-    "Content": "Sound Settings",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "mmsys.cpl"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/sound"
-  },
-  "WPFPanelSystem": {
-    "Content": "System Properties",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "sysdm.cpl"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/system"
-  },
-  "WPFPanelTimedate": {
-    "Content": "Time and Date",
-    "category": "Legacy Windows Panels",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "InvokeScript": [
-      "timedate.cpl"
-    ],
-    "link": "https://winutil.christitus.com/dev/features/legacy-windows-panels/timedate"
-  },
-  "WPFWinUtilInstallPSProfile": {
-    "Content": "Install CTT PowerShell Profile",
-    "category": "Powershell Profile Powershell 7+ Only",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WinUtilInstallPSProfile",
-    "link": "https://winutil.christitus.com/dev/features/powershell-profile-powershell-7--only/installpsprofile"
-  },
-  "WPFWinUtilUninstallPSProfile": {
-    "Content": "Uninstall CTT PowerShell Profile",
-    "category": "Powershell Profile Powershell 7+ Only",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WinUtilUninstallPSProfile",
-    "link": "https://winutil.christitus.com/dev/features/powershell-profile-powershell-7--only/uninstallpsprofile"
-  },
-  "WPFWinUtilSSHServer": {
-    "Content": "Enable OpenSSH Server",
-    "category": "Remote Access",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "function": "Invoke-WPFSSHServer",
-    "link": "https://winutil.christitus.com/dev/features/remote-access/sshserver"
-  }
+    "WPFFeaturesdotnet":  {
+                              "Content":  ".NET Framework (Versions 2, 3, 4) - Enable",
+                              "Description":  ".NET and .NET Framework is a developer platform made up of tools, programming languages, and libraries for building many different types of applications.",
+                              "category":  "Features",
+                              "panel":  "1",
+                              "feature":  [
+                                              "NetFx4-AdvSrvs",
+                                              "NetFx3"
+                                          ],
+                              "InvokeScript":  [
+
+                                               ],
+                              "link":  "https://winutil.christitus.com/dev/features/features/dotnet"
+                          },
+    "WPFFixesNTPPool":  {
+                            "Content":  "NTP Server - Enable",
+                            "Description":  "Replaces the default Windows NTP server (time.windows.com) with pool.ntp.org for improved time synchronization accuracy and reliability.",
+                            "category":  "Fixes",
+                            "panel":  "1",
+                            "Type":  "Button",
+                            "ButtonWidth":  "300",
+                            "function":  "Invoke-WPFFixesNTPPool",
+                            "link":  "https://winutil.christitus.com/dev/features/fixes/ntppool"
+                        },
+    "WPFFeatureshyperv":  {
+                              "Content":  "Hyper-V - Enable",
+                              "Description":  "Hyper-V is a hardware virtualization product developed by Microsoft that allows users to create and manage virtual machines.",
+                              "category":  "Features",
+                              "panel":  "1",
+                              "feature":  [
+                                              "Microsoft-Hyper-V-All"
+                                          ],
+                              "InvokeScript":  [
+                                                   "bcdedit /set hypervisorschedulertype classic"
+                                               ],
+                              "link":  "https://winutil.christitus.com/dev/features/features/hyperv"
+                          },
+    "WPFFeatureslegacymedia":  {
+                                   "Content":  "Legacy Media Components (WMP, DirectPlay) - Enable",
+                                   "Description":  "Enables legacy programs from previous versions of Windows.",
+                                   "category":  "Features",
+                                   "panel":  "1",
+                                   "feature":  [
+                                                   "WindowsMediaPlayer",
+                                                   "MediaPlayback",
+                                                   "DirectPlay",
+                                                   "LegacyComponents"
+                                               ],
+                                   "InvokeScript":  [
+
+                                                    ],
+                                   "link":  "https://winutil.christitus.com/dev/features/features/legacymedia"
+                               },
+    "WPFFeaturewsl":  {
+                          "Content":  "Windows Subsystem for Linux (WSL) - Enable",
+                          "Description":  "Windows Subsystem for Linux is an optional feature of Windows that allows Linux programs to run natively on Windows without the need for a separate virtual machine or dual booting.",
+                          "category":  "Features",
+                          "panel":  "1",
+                          "feature":  [
+                                          "VirtualMachinePlatform",
+                                          "Microsoft-Windows-Subsystem-Linux"
+                                      ],
+                          "InvokeScript":  [
+
+                                           ],
+                          "link":  "https://winutil.christitus.com/dev/features/features/wsl"
+                      },
+    "WPFFeaturenfs":  {
+                          "Content":  "Network File System (NFS) - Enable",
+                          "Description":  "Network File System (NFS) is a mechanism for storing files on a network.",
+                          "category":  "Features",
+                          "panel":  "1",
+                          "feature":  [
+                                          "ServicesForNFS-ClientOnly",
+                                          "ClientForNFS-Infrastructure",
+                                          "NFS-Administration"
+                                      ],
+                          "InvokeScript":  [
+                                               "nfsadmin client stop",
+                                               "Set-ItemProperty -Path \u0027HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default\u0027 -Name \u0027AnonymousUID\u0027 -Type DWord -Value 0",
+                                               "Set-ItemProperty -Path \u0027HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default\u0027 -Name \u0027AnonymousGID\u0027 -Type DWord -Value 0",
+                                               "nfsadmin client start",
+                                               "nfsadmin client localhost config fileaccess=755 SecFlavors=+sys -krb5 -krb5i"
+                                           ],
+                          "link":  "https://winutil.christitus.com/dev/features/features/nfs"
+                      },
+    "WPFFeatureRegBackup":  {
+                                "Content":  "Registry Backup (Daily Task 12:30am) - Enable",
+                                "Description":  "Enables daily registry backup, previously disabled by Microsoft in Windows 10 1803.",
+                                "category":  "Features",
+                                "panel":  "1",
+                                "feature":  [
+
+                                            ],
+                                "InvokeScript":  [
+                                                     "\r\n      New-ItemProperty -Path \u0027HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Configuration Manager\u0027 -Name \u0027EnablePeriodicBackup\u0027 -Type DWord -Value 1 -Force\r\n      New-ItemProperty -Path \u0027HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Configuration Manager\u0027 -Name \u0027BackupCount\u0027 -Type DWord -Value 2 -Force\r\n      $action = New-ScheduledTaskAction -Execute \u0027schtasks\u0027 -Argument \u0027/run /i /tn \"\\Microsoft\\Windows\\Registry\\RegIdleBackup\"\u0027\r\n      $trigger = New-ScheduledTaskTrigger -Daily -At 00:30\r\n      Register-ScheduledTask -Action $action -Trigger $trigger -TaskName \u0027AutoRegBackup\u0027 -Description \u0027Create System Registry Backups\u0027 -User \u0027System\u0027\r\n      "
+                                                 ],
+                                "link":  "https://winutil.christitus.com/dev/features/features/regbackup"
+                            },
+    "WPFFeatureEnableLegacyRecovery":  {
+                                           "Content":  "Legacy F8 Boot Recovery - Enable",
+                                           "Description":  "Enables Advanced Boot Options screen that lets you start Windows in advanced troubleshooting modes.",
+                                           "category":  "Features",
+                                           "panel":  "1",
+                                           "feature":  [
+
+                                                       ],
+                                           "InvokeScript":  [
+                                                                "bcdedit /set bootmenupolicy legacy"
+                                                            ],
+                                           "link":  "https://winutil.christitus.com/dev/features/features/enablelegacyrecovery"
+                                       },
+    "WPFFeatureDisableLegacyRecovery":  {
+                                            "Content":  "Legacy F8 Boot Recovery - Disable",
+                                            "Description":  "Disables Advanced Boot Options screen that lets you start Windows in advanced troubleshooting modes.",
+                                            "category":  "Features",
+                                            "panel":  "1",
+                                            "feature":  [
+
+                                                        ],
+                                            "InvokeScript":  [
+                                                                 "bcdedit /set bootmenupolicy standard"
+                                                             ],
+                                            "link":  "https://winutil.christitus.com/dev/features/features/disablelegacyrecovery"
+                                        },
+    "WPFFeaturesSandbox":  {
+                               "Content":  "Windows Sandbox - Enable",
+                               "Description":  "Windows Sandbox is a lightweight virtual machine that provides a temporary desktop environment to safely run applications and programs in isolation.",
+                               "category":  "Features",
+                               "panel":  "1",
+                               "feature":  [
+                                               "Containers-DisposableClientVM"
+                                           ],
+                               "link":  "https://winutil.christitus.com/dev/features/features/sandbox"
+                           },
+    "WPFFeatureInstall":  {
+                              "Content":  "Run Features",
+                              "category":  "Features",
+                              "panel":  "1",
+                              "Type":  "Button",
+                              "ButtonWidth":  "300",
+                              "function":  "Invoke-WPFFeatureInstall",
+                              "link":  "https://winutil.christitus.com/dev/features/features/install"
+                          },
+    "WPFPanelAutologin":  {
+                              "Content":  "AutoLogon - Run",
+                              "category":  "Fixes",
+                              "panel":  "1",
+                              "Type":  "Button",
+                              "ButtonWidth":  "300",
+                              "function":  "Invoke-WPFPanelAutologin",
+                              "link":  "https://winutil.christitus.com/dev/features/fixes/autologin"
+                          },
+    "WPFFixesUpdate":  {
+                           "Content":  "Windows Update - Reset",
+                           "category":  "Fixes",
+                           "panel":  "1",
+                           "Type":  "Button",
+                           "ButtonWidth":  "300",
+                           "function":  "Invoke-WPFFixesUpdate",
+                           "link":  "https://winutil.christitus.com/dev/features/fixes/update"
+                       },
+    "WPFFixesNetwork":  {
+                            "Content":  "Network - Reset",
+                            "category":  "Fixes",
+                            "panel":  "1",
+                            "Type":  "Button",
+                            "ButtonWidth":  "300",
+                            "function":  "Invoke-WPFFixesNetwork",
+                            "link":  "https://winutil.christitus.com/dev/features/fixes/network"
+                        },
+    "WPFPanelDISM":  {
+                         "Content":  "System Corruption Scan - Run",
+                         "category":  "Fixes",
+                         "panel":  "1",
+                         "Type":  "Button",
+                         "ButtonWidth":  "300",
+                         "function":  "Invoke-WPFSystemRepair",
+                         "link":  "https://winutil.christitus.com/dev/features/fixes/dism"
+                     },
+    "WPFFixesWinget":  {
+                           "Content":  "WinGet - Reinstall",
+                           "category":  "Fixes",
+                           "panel":  "1",
+                           "Type":  "Button",
+                           "ButtonWidth":  "300",
+                           "function":  "Invoke-WPFFixesWinget",
+                           "link":  "https://winutil.christitus.com/dev/features/fixes/winget"
+                       },
+    "WPFPanelControl":  {
+                            "Content":  "Control Panel",
+                            "category":  "Legacy Windows Panels",
+                            "panel":  "2",
+                            "Type":  "Button",
+                            "ButtonWidth":  "300",
+                            "InvokeScript":  [
+                                                 "control"
+                                             ],
+                            "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/control"
+                        },
+    "WPFPanelComputer":  {
+                             "Content":  "Computer Management",
+                             "category":  "Legacy Windows Panels",
+                             "panel":  "2",
+                             "Type":  "Button",
+                             "ButtonWidth":  "300",
+                             "InvokeScript":  [
+                                                  "compmgmt.msc"
+                                              ],
+                             "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/computer"
+                         },
+    "WPFPanelNetwork":  {
+                            "Content":  "Network Connections",
+                            "category":  "Legacy Windows Panels",
+                            "panel":  "2",
+                            "Type":  "Button",
+                            "ButtonWidth":  "300",
+                            "InvokeScript":  [
+                                                 "ncpa.cpl"
+                                             ],
+                            "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/network"
+                        },
+    "WPFPanelPower":  {
+                          "Content":  "Power Panel",
+                          "category":  "Legacy Windows Panels",
+                          "panel":  "2",
+                          "Type":  "Button",
+                          "ButtonWidth":  "300",
+                          "InvokeScript":  [
+                                               "powercfg.cpl"
+                                           ],
+                          "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/power"
+                      },
+    "WPFPanelPrinter":  {
+                            "Content":  "Printer Panel",
+                            "category":  "Legacy Windows Panels",
+                            "panel":  "2",
+                            "Type":  "Button",
+                            "ButtonWidth":  "300",
+                            "InvokeScript":  [
+                                                 "Start-Process \u0027shell:::{A8A91A66-3A7D-4424-8D24-04E180695C7A}\u0027"
+                                             ],
+                            "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/printer"
+                        },
+    "WPFPanelRegion":  {
+                           "Content":  "Region",
+                           "category":  "Legacy Windows Panels",
+                           "panel":  "2",
+                           "Type":  "Button",
+                           "ButtonWidth":  "300",
+                           "InvokeScript":  [
+                                                "intl.cpl"
+                                            ],
+                           "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/region"
+                       },
+    "WPFPanelRestore":  {
+                            "Content":  "Windows Restore",
+                            "category":  "Legacy Windows Panels",
+                            "panel":  "2",
+                            "Type":  "Button",
+                            "ButtonWidth":  "300",
+                            "InvokeScript":  [
+                                                 "rstrui.exe"
+                                             ],
+                            "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/restore"
+                        },
+    "WPFPanelSound":  {
+                          "Content":  "Sound Settings",
+                          "category":  "Legacy Windows Panels",
+                          "panel":  "2",
+                          "Type":  "Button",
+                          "ButtonWidth":  "300",
+                          "InvokeScript":  [
+                                               "mmsys.cpl"
+                                           ],
+                          "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/sound"
+                      },
+    "WPFPanelSystem":  {
+                           "Content":  "System Properties",
+                           "category":  "Legacy Windows Panels",
+                           "panel":  "2",
+                           "Type":  "Button",
+                           "ButtonWidth":  "300",
+                           "InvokeScript":  [
+                                                "sysdm.cpl"
+                                            ],
+                           "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/system"
+                       },
+    "WPFPanelTimedate":  {
+                             "Content":  "Time and Date",
+                             "category":  "Legacy Windows Panels",
+                             "panel":  "2",
+                             "Type":  "Button",
+                             "ButtonWidth":  "300",
+                             "InvokeScript":  [
+                                                  "timedate.cpl"
+                                              ],
+                             "link":  "https://winutil.christitus.com/dev/features/legacy-windows-panels/timedate"
+                         },
+    "WPFWinUtilInstallPSProfile":  {
+                                       "Content":  "CTT PowerShell Profile - Install",
+                                       "category":  "Powershell Profile Powershell 7+ Only",
+                                       "panel":  "2",
+                                       "Type":  "Button",
+                                       "ButtonWidth":  "300",
+                                       "function":  "Invoke-WinUtilInstallPSProfile",
+                                       "link":  "https://winutil.christitus.com/dev/features/powershell-profile-powershell-7--only/installpsprofile"
+                                   },
+    "WPFWinUtilUninstallPSProfile":  {
+                                         "Content":  "CTT PowerShell Profile - Remove",
+                                         "category":  "Powershell Profile Powershell 7+ Only",
+                                         "panel":  "2",
+                                         "Type":  "Button",
+                                         "ButtonWidth":  "300",
+                                         "function":  "Invoke-WinUtilUninstallPSProfile",
+                                         "link":  "https://winutil.christitus.com/dev/features/powershell-profile-powershell-7--only/uninstallpsprofile"
+                                     },
+    "WPFWinUtilSSHServer":  {
+                                "Content":  "OpenSSH Server - Enable",
+                                "category":  "Remote Access",
+                                "panel":  "2",
+                                "Type":  "Button",
+                                "ButtonWidth":  "300",
+                                "function":  "Invoke-WPFSSHServer",
+                                "link":  "https://winutil.christitus.com/dev/features/remote-access/sshserver"
+                            }
 }
 '@ | ConvertFrom-Json
 $sync.configs.preset = @'
 {
-  "Standard": [
-    "WPFTweaksActivity",
-    "WPFTweaksConsumerFeatures",
-    "WPFTweaksDisableExplorerAutoDiscovery",
-    "WPFTweaksWPBT",
-    "WPFTweaksDVR",
-    "WPFTweaksLocation",
-    "WPFTweaksServices",
-    "WPFTweaksTelemetry",
-    "WPFTweaksDiskCleanup",
-    "WPFTweaksDeleteTempFiles",
-    "WPFTweaksEndTaskOnTaskbar",
-    "WPFTweaksRestorePoint",
-    "WPFTweaksPowershell7Tele"
-  ],
-  "Minimal": [
-    "WPFTweaksConsumerFeatures",
-    "WPFTweaksWPBT",
-    "WPFTweaksServices",
-    "WPFTweaksTelemetry"
-  ]
+    "Standard":  [
+                     "WPFTweaksActivity",
+                     "WPFTweaksConsumerFeatures",
+                     "WPFTweaksDisableExplorerAutoDiscovery",
+                     "WPFTweaksWPBT",
+                     "WPFTweaksDVR",
+                     "WPFTweaksLocation",
+                     "WPFTweaksServices",
+                     "WPFTweaksTelemetry",
+                     "WPFTweaksDiskCleanup",
+                     "WPFTweaksDeleteTempFiles",
+                     "WPFTweaksEndTaskOnTaskbar",
+                     "WPFTweaksRestorePoint",
+                     "WPFTweaksPowershell7Tele"
+                 ],
+    "Minimal":  [
+                    "WPFTweaksConsumerFeatures",
+                    "WPFTweaksWPBT",
+                    "WPFTweaksServices",
+                    "WPFTweaksTelemetry"
+                ]
 }
 '@ | ConvertFrom-Json
 $sync.configs.themes = @'
 {
-  "shared": {
-    "AppEntryWidth": "200",
-    "AppEntryFontSize": "11",
-    "AppEntryMargin": "1,0,1,0",
-    "AppEntryBorderThickness": "0",
-    "CustomDialogFontSize": "12",
-    "CustomDialogFontSizeHeader": "14",
-    "CustomDialogLogoSize": "25",
-    "CustomDialogWidth": "400",
-    "CustomDialogHeight": "200",
-    "FontSize": "12",
-    "FontFamily": "Arial",
-    "HeaderFontSize": "16",
-    "HeaderFontFamily": "Consolas, Monaco",
-    "CheckBoxBulletDecoratorSize": "14",
-    "CheckBoxMargin": "15,0,0,2",
-    "TabContentMargin": "5",
-    "TabButtonFontSize": "14",
-    "TabButtonWidth": "110",
-    "TabButtonHeight": "26",
-    "TabRowHeightInPixels": "50",
-    "ToolTipWidth": "300",
-    "IconFontSize": "14",
-    "IconButtonSize": "35",
-    "SettingsIconFontSize": "18",
-    "CloseIconFontSize": "18",
-    "GroupBorderBackgroundColor": "#232629",
-    "ButtonFontSize": "12",
-    "ButtonFontFamily": "Arial",
-    "ButtonWidth": "200",
-    "ButtonHeight": "25",
-    "ConfigTabButtonFontSize": "14",
-    "ConfigUpdateButtonFontSize": "14",
-    "SearchBarWidth": "200",
-    "SearchBarHeight": "26",
-    "SearchBarTextBoxFontSize": "12",
-    "SearchBarClearButtonFontSize": "14",
-    "CheckboxMouseOverColor": "#999999",
-    "ButtonBorderThickness": "1",
-    "ButtonMargin": "1",
-    "ButtonCornerRadius": "2"
-  },
-  "Light": {
-    "AppInstallUnselectedColor": "#F7F7F7",
-    "AppInstallHighlightedColor": "#CFCFCF",
-    "AppInstallSelectedColor": "#C2C2C2",
-    "AppInstallOverlayBackgroundColor": "#6A6D72",
-    "ComboBoxForegroundColor": "#232629",
-    "ComboBoxBackgroundColor": "#F7F7F7",
-    "LabelboxForegroundColor": "#232629",
-    "MainForegroundColor": "#232629",
-    "MainBackgroundColor": "#F7F7F7",
-    "LabelBackgroundColor": "#F7F7F7",
-    "LinkForegroundColor": "#484848",
-    "LinkHoverForegroundColor": "#232629",
-    "ScrollBarBackgroundColor": "#4A4D52",
-    "ScrollBarHoverColor": "#5A5D62",
-    "ScrollBarDraggingColor": "#6A6D72",
-    "ProgressBarForegroundColor": "#2e77ff",
-    "ProgressBarBackgroundColor": "Transparent",
-    "ProgressBarTextColor": "#232629",
-    "ButtonInstallBackgroundColor": "#F7F7F7",
-    "ButtonTweaksBackgroundColor": "#F7F7F7",
-    "ButtonConfigBackgroundColor": "#F7F7F7",
-    "ButtonUpdatesBackgroundColor": "#F7F7F7",
-    "ButtonWin11ISOBackgroundColor": "#F7F7F7",
-    "ButtonInstallForegroundColor": "#232629",
-    "ButtonTweaksForegroundColor": "#232629",
-    "ButtonConfigForegroundColor": "#232629",
-    "ButtonUpdatesForegroundColor": "#232629",
-    "ButtonWin11ISOForegroundColor": "#232629",
-    "ButtonBackgroundColor": "#F5F5F5",
-    "ButtonBackgroundPressedColor": "#1A1A1A",
-    "ButtonBackgroundMouseoverColor": "#C2C2C2",
-    "ButtonBackgroundSelectedColor": "#F0F0F0",
-    "ButtonForegroundColor": "#232629",
-    "ToggleButtonOnColor": "#2e77ff",
-    "ToggleButtonOffColor": "#707070",
-    "ToolTipBackgroundColor": "#F7F7F7",
-    "BorderColor": "#232629",
-    "BorderOpacity": "0.2"
-  },
-  "Dark": {
-    "AppInstallUnselectedColor": "#232629",
-    "AppInstallHighlightedColor": "#3C3C3C",
-    "AppInstallSelectedColor": "#4C4C4C",
-    "AppInstallOverlayBackgroundColor": "#2E3135",
-    "ComboBoxForegroundColor": "#F7F7F7",
-    "ComboBoxBackgroundColor": "#1E3747",
-    "LabelboxForegroundColor": "#5bdcff",
-    "MainForegroundColor": "#F7F7F7",
-    "MainBackgroundColor": "#232629",
-    "LabelBackgroundColor": "#232629",
-    "LinkForegroundColor": "#add8e6",
-    "LinkHoverForegroundColor": "#F7F7F7",
-    "ScrollBarBackgroundColor": "#2E3135",
-    "ScrollBarHoverColor": "#3B4252",
-    "ScrollBarDraggingColor": "#5E81AC",
-    "ProgressBarForegroundColor": "#222222",
-    "ProgressBarBackgroundColor": "Transparent",
-    "ProgressBarTextColor": "#232629",
-    "ButtonInstallBackgroundColor": "#222222",
-    "ButtonTweaksBackgroundColor": "#333333",
-    "ButtonConfigBackgroundColor": "#444444",
-    "ButtonUpdatesBackgroundColor": "#555555",
-    "ButtonWin11ISOBackgroundColor": "#666666",
-    "ButtonInstallForegroundColor": "#F7F7F7",
-    "ButtonTweaksForegroundColor": "#F7F7F7",
-    "ButtonConfigForegroundColor": "#F7F7F7",
-    "ButtonUpdatesForegroundColor": "#F7F7F7",
-    "ButtonWin11ISOForegroundColor": "#F7F7F7",
-    "ButtonBackgroundColor": "#1E3747",
-    "ButtonBackgroundPressedColor": "#F7F7F7",
-    "ButtonBackgroundMouseoverColor": "#3B4252",
-    "ButtonBackgroundSelectedColor": "#5E81AC",
-    "ButtonForegroundColor": "#F7F7F7",
-    "ToggleButtonOnColor": "#2e77ff",
-    "ToggleButtonOffColor": "#707070",
-    "ToolTipBackgroundColor": "#2F373D",
-    "BorderColor": "#2F373D",
-    "BorderOpacity": "0.2"
-  }
+    "shared":  {
+                   "AppEntryWidth":  "200",
+                   "AppEntryFontSize":  "11",
+                   "AppEntryMargin":  "1,0,1,0",
+                   "AppEntryBorderThickness":  "0",
+                   "CustomDialogFontSize":  "12",
+                   "CustomDialogFontSizeHeader":  "14",
+                   "CustomDialogLogoSize":  "25",
+                   "CustomDialogWidth":  "400",
+                   "CustomDialogHeight":  "200",
+                   "FontSize":  "12",
+                   "FontFamily":  "Arial",
+                   "HeaderFontSize":  "16",
+                   "HeaderFontFamily":  "Consolas, Monaco",
+                   "CheckBoxBulletDecoratorSize":  "14",
+                   "CheckBoxMargin":  "15,0,0,2",
+                   "TabContentMargin":  "5",
+                   "TabButtonFontSize":  "14",
+                   "TabButtonWidth":  "110",
+                   "TabButtonHeight":  "26",
+                   "TabRowHeightInPixels":  "50",
+                   "ToolTipWidth":  "300",
+                   "IconFontSize":  "14",
+                   "IconButtonSize":  "35",
+                   "SettingsIconFontSize":  "18",
+                   "CloseIconFontSize":  "18",
+                   "GroupBorderBackgroundColor":  "#232629",
+                   "ButtonFontSize":  "12",
+                   "ButtonFontFamily":  "Arial",
+                   "ButtonWidth":  "200",
+                   "ButtonHeight":  "25",
+                   "ConfigTabButtonFontSize":  "14",
+                   "ConfigUpdateButtonFontSize":  "14",
+                   "SearchBarWidth":  "200",
+                   "SearchBarHeight":  "26",
+                   "SearchBarTextBoxFontSize":  "12",
+                   "SearchBarClearButtonFontSize":  "14",
+                   "CheckboxMouseOverColor":  "#999999",
+                   "ButtonBorderThickness":  "1",
+                   "ButtonMargin":  "1",
+                   "ButtonCornerRadius":  "2"
+               },
+    "Light":  {
+                  "AppInstallUnselectedColor":  "#F7F7F7",
+                  "AppInstallHighlightedColor":  "#CFCFCF",
+                  "AppInstallSelectedColor":  "#C2C2C2",
+                  "AppInstallOverlayBackgroundColor":  "#6A6D72",
+                  "ComboBoxForegroundColor":  "#232629",
+                  "ComboBoxBackgroundColor":  "#F7F7F7",
+                  "LabelboxForegroundColor":  "#232629",
+                  "MainForegroundColor":  "#232629",
+                  "MainBackgroundColor":  "#F7F7F7",
+                  "LabelBackgroundColor":  "#F7F7F7",
+                  "LinkForegroundColor":  "#484848",
+                  "LinkHoverForegroundColor":  "#232629",
+                  "ScrollBarBackgroundColor":  "#4A4D52",
+                  "ScrollBarHoverColor":  "#5A5D62",
+                  "ScrollBarDraggingColor":  "#6A6D72",
+                  "ProgressBarForegroundColor":  "#2E77FF",
+                  "ProgressBarBackgroundColor":  "Transparent",
+                  "ProgressBarTextColor":  "#232629",
+                  "ButtonInstallBackgroundColor":  "#F7F7F7",
+                  "ButtonTweaksBackgroundColor":  "#F7F7F7",
+                  "ButtonConfigBackgroundColor":  "#F7F7F7",
+                  "ButtonUpdatesBackgroundColor":  "#F7F7F7",
+                  "ButtonWin11ISOBackgroundColor":  "#F7F7F7",
+                  "ButtonInstallForegroundColor":  "#232629",
+                  "ButtonTweaksForegroundColor":  "#232629",
+                  "ButtonConfigForegroundColor":  "#232629",
+                  "ButtonUpdatesForegroundColor":  "#232629",
+                  "ButtonWin11ISOForegroundColor":  "#232629",
+                  "ButtonBackgroundColor":  "#F5F5F5",
+                  "ButtonBackgroundPressedColor":  "#1A1A1A",
+                  "ButtonBackgroundMouseoverColor":  "#C2C2C2",
+                  "ButtonBackgroundSelectedColor":  "#F0F0F0",
+                  "ButtonForegroundColor":  "#232629",
+                  "ToggleButtonOnColor":  "#2E77FF",
+                  "ToggleButtonOffColor":  "#707070",
+                  "ToolTipBackgroundColor":  "#F7F7F7",
+                  "BorderColor":  "#232629",
+                  "BorderOpacity":  "0.2"
+              },
+    "Dark":  {
+                 "AppInstallUnselectedColor":  "#232629",
+                 "AppInstallHighlightedColor":  "#3C3C3C",
+                 "AppInstallSelectedColor":  "#4C4C4C",
+                 "AppInstallOverlayBackgroundColor":  "#2E3135",
+                 "ComboBoxForegroundColor":  "#F7F7F7",
+                 "ComboBoxBackgroundColor":  "#1E3747",
+                 "LabelboxForegroundColor":  "#5BDCFF",
+                 "MainForegroundColor":  "#F7F7F7",
+                 "MainBackgroundColor":  "#232629",
+                 "LabelBackgroundColor":  "#232629",
+                 "LinkForegroundColor":  "#ADD8E6",
+                 "LinkHoverForegroundColor":  "#F7F7F7",
+                 "ScrollBarBackgroundColor":  "#2E3135",
+                 "ScrollBarHoverColor":  "#3B4252",
+                 "ScrollBarDraggingColor":  "#5E81AC",
+                 "ProgressBarForegroundColor":  "#222222",
+                 "ProgressBarBackgroundColor":  "Transparent",
+                 "ProgressBarTextColor":  "#232629",
+                 "ButtonInstallBackgroundColor":  "#222222",
+                 "ButtonTweaksBackgroundColor":  "#333333",
+                 "ButtonConfigBackgroundColor":  "#444444",
+                 "ButtonUpdatesBackgroundColor":  "#555555",
+                 "ButtonWin11ISOBackgroundColor":  "#666666",
+                 "ButtonInstallForegroundColor":  "#F7F7F7",
+                 "ButtonTweaksForegroundColor":  "#F7F7F7",
+                 "ButtonConfigForegroundColor":  "#F7F7F7",
+                 "ButtonUpdatesForegroundColor":  "#F7F7F7",
+                 "ButtonWin11ISOForegroundColor":  "#F7F7F7",
+                 "ButtonBackgroundColor":  "#1E3747",
+                 "ButtonBackgroundPressedColor":  "#F7F7F7",
+                 "ButtonBackgroundMouseoverColor":  "#3B4252",
+                 "ButtonBackgroundSelectedColor":  "#5E81AC",
+                 "ButtonForegroundColor":  "#F7F7F7",
+                 "ToggleButtonOnColor":  "#2E77FF",
+                 "ToggleButtonOffColor":  "#707070",
+                 "ToolTipBackgroundColor":  "#2F373D",
+                 "BorderColor":  "#2F373D",
+                 "BorderOpacity":  "0.2"
+             }
 }
 '@ | ConvertFrom-Json
 $sync.configs.tweaks = @'
 {
-  "WPFTweaksActivity": {
-    "Content": "Disable Activity History",
-    "Description": "Erases recent docs, clipboard, and run history.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
-        "Name": "EnableActivityFeed",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
-        "Name": "PublishUserActivities",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
-        "Name": "UploadUserActivities",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/activity"
-  },
-  "WPFTweaksHiber": {
-    "Content": "Disable Hibernation",
-    "Description": "Hibernation is really meant for laptops as it saves what's in memory before turning the PC off. It really should never be used.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\System\\CurrentControlSet\\Control\\Session Manager\\Power",
-        "Name": "HibernateEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FlyoutMenuSettings",
-        "Name": "ShowHibernateOption",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      }
-    ],
-    "InvokeScript": [
-      "powercfg.exe /hibernate off"
-    ],
-    "UndoScript": [
-      "powercfg.exe /hibernate on"
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/hiber"
-  },
-  "WPFTweaksWidget": {
-    "Content": "Remove Widgets",
-    "Description": "Removes the annoying widgets in the bottom left of the Taskbar.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      # Sometimes if you dont stop the Widgets process the removal may fail\r\n\r\n      Get-Process *Widget* | Stop-Process\r\n      Get-AppxPackage Microsoft.WidgetsPlatformRuntime -AllUsers | Remove-AppxPackage -AllUsers\r\n      Get-AppxPackage MicrosoftWindows.Client.WebExperience -AllUsers | Remove-AppxPackage -AllUsers\r\n\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      Write-Host \"Removed widgets\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Write-Host \"Restoring widgets AppxPackages\"\r\n\r\n      Add-AppxPackage -Register \"C:\\Program Files\\WindowsApps\\Microsoft.WidgetsPlatformRuntime*\\AppxManifest.xml\" -DisableDevelopmentMode\r\n      Add-AppxPackage -Register \"C:\\Program Files\\WindowsApps\\MicrosoftWindows.Client.WebExperience*\\AppxManifest.xml\" -DisableDevelopmentMode\r\n\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/widget"
-  },
-  "WPFTweaksRevertStartMenu": {
-    "Content": "Revert Start Menu layout",
-    "Description": "Bring back the old Start Menu layout from before the gradual rollout of the new one in 25H2.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      Invoke-WebRequest https://github.com/thebookisclosed/ViVe/releases/download/v0.3.4/ViVeTool-v0.3.4-IntelAmd.zip -OutFile ViVeTool.zip\r\n\r\n      Expand-Archive ViVeTool.zip\r\n      Remove-Item ViVeTool.zip\r\n\r\n      Start-Process 'ViVeTool\\ViVeTool.exe' -ArgumentList '/disable /id:47205210' -Wait -NoNewWindow\r\n\r\n      Remove-Item ViVeTool -Recurse\r\n\r\n      Write-Host 'Old start menu reverted. Please restart your computer to take effect.'\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Invoke-WebRequest https://github.com/thebookisclosed/ViVe/releases/download/v0.3.4/ViVeTool-v0.3.4-IntelAmd.zip -OutFile ViVeTool.zip\r\n\r\n      Expand-Archive ViVeTool.zip\r\n      Remove-Item ViVeTool.zip\r\n\r\n      Start-Process 'ViVeTool\\ViVeTool.exe' -ArgumentList '/enable /id:47205210' -Wait -NoNewWindow\r\n\r\n      Remove-Item ViVeTool -Recurse\r\n\r\n      Write-Host 'New start menu reverted. Please restart your computer to take effect.'\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/revertstartmenu"
-  },
-  "WPFTweaksDisableStoreSearch": {
-    "Content": "Disable Microsoft Store search results",
-    "Description": "Will not display recommended Microsoft Store apps when searching for apps in the Start menu.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "InvokeScript": [
-      "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /deny Everyone:F"
-    ],
-    "UndoScript": [
-      "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /grant Everyone:F"
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/disablestoresearch"
-  },
-  "WPFTweaksLocation": {
-    "Content": "Disable Location Tracking",
-    "Description": "Disables Location Tracking.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "service": [
-      {
-        "Name": "lfsvc",
-        "StartupType": "Disable",
-        "OriginalType": "Manual"
-      }
-    ],
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location",
-        "Name": "Value",
-        "Value": "Deny",
-        "Type": "String",
-        "OriginalValue": "Allow"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Sensor\\Overrides\\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}",
-        "Name": "SensorPermissionState",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKLM:\\SYSTEM\\Maps",
-        "Name": "AutoUpdateEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/location"
-  },
-  "WPFTweaksServices": {
-    "Content": "Set Services to Manual",
-    "Description": "Turns a bunch of system services to manual that don't need to be running all the time. This is pretty harmless as if the service is needed, it will simply start on demand.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "service": [
-      {
-        "Name": "ALG",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "AppMgmt",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "AppReadiness",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "AppVClient",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "Appinfo",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "AssignedAccessManagerSvc",
-        "StartupType": "Disabled",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "AudioEndpointBuilder",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "AudioSrv",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "Audiosrv",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "AxInstSV",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "BDESVC",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "BITS",
-        "StartupType": "AutomaticDelayedStart",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "BTAGService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "BthAvctpSvc",
-        "StartupType": "Automatic",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "CDPSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "COMSysApp",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "CertPropSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "CryptSvc",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "CscService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "DPS",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "DevQueryBroker",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "DeviceAssociationService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "DeviceInstall",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "Dhcp",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "DiagTrack",
-        "StartupType": "Disabled",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "DialogBlockingService",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "DispBrokerDesktopSvc",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "DisplayEnhancementService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "EFS",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "EapHost",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "EventLog",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "EventSystem",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "FDResPub",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "FontCache",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "FrameServer",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "FrameServerMonitor",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "GraphicsPerfSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "HvHost",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "IKEEXT",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "InstallService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "InventorySvc",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "IpxlatCfgSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "KeyIso",
-        "StartupType": "Automatic",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "KtmRm",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "LanmanServer",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "LanmanWorkstation",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "LicenseManager",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "LxpSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "MSDTC",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "MSiSCSI",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "MapsBroker",
-        "StartupType": "AutomaticDelayedStart",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "McpManagementService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "MicrosoftEdgeElevationService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "NaturalAuthentication",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "NcaSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "NcbService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "NcdAutoSetup",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "NetSetupSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "NetTcpPortSharing",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "Netman",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "NlaSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "PcaSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "PeerDistSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "PerfHost",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "PhoneSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "PlugPlay",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "PolicyAgent",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "Power",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "PrintNotify",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "ProfSvc",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "PushToInstall",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "QWAVE",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "RasAuto",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "RasMan",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "RemoteAccess",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "RemoteRegistry",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "RetailDemo",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "RmSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "RpcLocator",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SCPolicySvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SCardSvr",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SDRSVC",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SEMgrSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SENS",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "SNMPTRAP",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SNMPTrap",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SSDPSRV",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SamSs",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "ScDeviceEnum",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SensorDataService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SensorService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SensrSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SessionEnv",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "SharedAccess",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "ShellHWDetection",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "SmsRouter",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "Spooler",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "SstpSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "StiSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "StorSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "SysMain",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "TapiSrv",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "TermService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "Themes",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "TieringEngineService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "TokenBroker",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "TrkWks",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "TroubleshootingSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "TrustedInstaller",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "UevAgentService",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "UmRdpService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "UserManager",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "UsoSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "VSS",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "VaultSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "W32Time",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WEPHOSTSVC",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WFDSConMgrSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WMPNetworkSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WManSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WPDBusEnum",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WSAIFabricSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "WSearch",
-        "StartupType": "AutomaticDelayedStart",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "WalletService",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WarpJITSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WbioSrvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "Wcmsvc",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "WdiServiceHost",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WdiSystemHost",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WebClient",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "Wecsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WerSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WiaRpc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WinRM",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "Winmgmt",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "WpcMonSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "WpnService",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "XblAuthManager",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "XblGameSave",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "XboxGipSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "XboxNetApiSvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "autotimesvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "bthserv",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "camsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "cloudidsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "dcsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "defragsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "diagsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "dmwappushservice",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "dot3svc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "edgeupdate",
-        "StartupType": "Manual",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "edgeupdatem",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "fdPHost",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "fhsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "hidserv",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "icssvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "iphlpsvc",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "lfsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "lltdsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "lmhosts",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "netprofm",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "nsi",
-        "StartupType": "Automatic",
-        "OriginalType": "Automatic"
-      },
-      {
-        "Name": "perceptionsimulation",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "pla",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "seclogon",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "shpamsvc",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "smphost",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "ssh-agent",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "svsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "swprv",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "tzautoupdate",
-        "StartupType": "Disabled",
-        "OriginalType": "Disabled"
-      },
-      {
-        "Name": "upnphost",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vds",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vmicguestinterface",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vmicheartbeat",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vmickvpexchange",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vmicrdv",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vmicshutdown",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vmictimesync",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vmicvmsession",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "vmicvss",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "wbengine",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "wcncsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "webthreatdefsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "wercplsupport",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "wisvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "wlidsvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "wlpasvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "wmiApSrv",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "workfolderssvc",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      },
-      {
-        "Name": "wuauserv",
-        "StartupType": "Manual",
-        "OriginalType": "Manual"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/services"
-  },
-  "WPFTweaksBraveDebloat": {
-    "Content": "Brave Debloat",
-    "Description": "Disables various annoyances like Brave Rewards, Leo AI, Crypto Wallet and VPN.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
-        "Name": "BraveRewardsDisabled",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
-        "Name": "BraveWalletDisabled",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
-        "Name": "BraveVPNDisabled",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
-        "Name": "BraveAIChatEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
-        "Name": "BraveStatsPingEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/bravedebloat"
-  },
-  "WPFTweaksEdgeDebloat": {
-    "Content": "Edge Debloat",
-    "Description": "Disables various telemetry options, popups, and other annoyances in Edge.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\EdgeUpdate",
-        "Name": "CreateDesktopShortcutDefault",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "PersonalizationReportingEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge\\ExtensionInstallBlocklist",
-        "Name": "1",
-        "Value": "ofefcgjbeghpigppfmkologfjadafddi",
-        "Type": "String",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "ShowRecommendationsEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "HideFirstRunExperience",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "UserFeedbackAllowed",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "ConfigureDoNotTrack",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "AlternateErrorPagesEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "EdgeCollectionsEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "EdgeShoppingAssistantEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "MicrosoftEdgeInsiderPromotionEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "ShowMicrosoftRewards",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "WebWidgetAllowed",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "DiagnosticData",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "EdgeAssetDeliveryServiceEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "WalletDonationEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
-        "Name": "DefaultBrowserSettingsCampaignEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/edgedebloat"
-  },
-  "WPFTweaksConsumerFeatures": {
-    "Content": "Disable ConsumerFeatures",
-    "Description": "Windows will not automatically install any games, third-party apps, or application links from the Windows Store for the signed-in user. Some default Apps will be inaccessible (eg. Phone Link).",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",
-        "Name": "DisableWindowsConsumerFeatures",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/consumerfeatures"
-  },
-  "WPFTweaksTelemetry": {
-    "Content": "Disable Telemetry",
-    "Description": "Disables Microsoft Telemetry.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",
-        "Name": "Enabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Privacy",
-        "Name": "TailoredExperiencesWithDiagnosticDataEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Speech_OneCore\\Settings\\OnlineSpeechPrivacy",
-        "Name": "HasAccepted",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Input\\TIPC",
-        "Name": "Enabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\InputPersonalization",
-        "Name": "RestrictImplicitInkCollection",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\InputPersonalization",
-        "Name": "RestrictImplicitTextCollection",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\InputPersonalization\\TrainedDataStore",
-        "Name": "HarvestContacts",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Personalization\\Settings",
-        "Name": "AcceptedPrivacyPolicy",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection",
-        "Name": "AllowTelemetry",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "Start_TrackProgs",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
-        "Name": "PublishUserActivities",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Siuf\\Rules",
-        "Name": "NumberOfSIUFInPeriod",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      }
-    ],
-    "InvokeScript": [
-      "\r\n      # Disable Defender Auto Sample Submission\r\n      Set-MpPreference -SubmitSamplesConsent 2\r\n\r\n      # Disable (Connected User Experiences and Telemetry) Service\r\n      Set-Service -Name diagtrack -StartupType Disabled\r\n\r\n      # Disable (Windows Error Reporting Manager) Service\r\n      Set-Service -Name wermgr -StartupType Disabled\r\n\r\n      $Memory = (Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum / 1KB\r\n      Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Control\" -Name SvcHostSplitThresholdInKB -Value $Memory\r\n\r\n      Remove-ItemProperty -Path \"HKCU:\\Software\\Microsoft\\Siuf\\Rules\" -Name PeriodInNanoSeconds\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      # Enable Defender Auto Sample Submission\r\n      Set-MpPreference -SubmitSamplesConsent 1\r\n\r\n      # Enable (Connected User Experiences and Telemetry) Service\r\n      Set-Service -Name diagtrack -StartupType Automatic\r\n\r\n      # Enable (Windows Error Reporting Manager) Service\r\n      Set-Service -Name wermgr -StartupType Automatic\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/telemetry"
-  },
-  "WPFTweaksRemoveEdge": {
-    "Content": "Remove Microsoft Edge",
-    "Description": "Unblocks Microsoft Edge uninstaller restrictions then uses that uninstaller to remove Microsoft Edge.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "InvokeScript": [
-      "Invoke-WinUtilRemoveEdge"
-    ],
-    "UndoScript": [
-      "\r\n      Write-Host 'Installing Microsoft Edge...'\r\n      winget install Microsoft.Edge --source winget\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removeedge"
-  },
-  "WPFTweaksUTC": {
-    "Content": "Set Time to UTC (Dual Boot)",
-    "Description": "Essential for computers that are dual booting. Fixes the time sync with Linux systems.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation",
-        "Name": "RealTimeIsUniversal",
-        "Value": "1",
-        "Type": "QWord",
-        "OriginalValue": "0"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/utc"
-  },
-  "WPFTweaksRemoveOneDrive": {
-    "Content": "Remove OneDrive",
-    "Description": "Denies permission to remove OneDrive user files, then uses its own uninstaller to remove it and restores the original permission afterward.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      # Deny permission to remove OneDrive folder\r\n      icacls $Env:OneDrive /deny \"Administrators:(D,DC)\"\r\n\r\n      Write-Host \"Uninstalling OneDrive...\"\r\n      Start-Process 'C:\\Windows\\System32\\OneDriveSetup.exe' -ArgumentList '/uninstall' -Wait\r\n\r\n      # Some of OneDrive files use explorer, and OneDrive uses FileCoAuth\r\n      Write-Host \"Removing leftover OneDrive Files...\"\r\n      Stop-Process -Name FileCoAuth,Explorer\r\n      Remove-Item \"$Env:LocalAppData\\Microsoft\\OneDrive\" -Recurse -Force\r\n      Remove-Item \"C:\\ProgramData\\Microsoft OneDrive\" -Recurse -Force\r\n\r\n      # Grant back permission to access OneDrive folder\r\n      icacls $Env:OneDrive /grant \"Administrators:(D,DC)\"\r\n\r\n      # Disable OneSyncSvc\r\n      Set-Service -Name OneSyncSvc -StartupType Disabled\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Write-Host \"Installing OneDrive\"\r\n      winget install Microsoft.Onedrive --source winget\r\n\r\n      # Enabled OneSyncSvc\r\n      Set-Service -Name OneSyncSvc -StartupType Automatic\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removeonedrive"
-  },
-  "WPFTweaksRemoveHome": {
-    "Content": "Remove Home from Explorer",
-    "Description": "Removes the Home from Explorer and sets This PC as default.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      Remove-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}\"\r\n      Set-ItemProperty -Path \"HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" -Name LaunchTo -Value 1\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}\"\r\n      Set-ItemProperty -Path \"HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" -Name LaunchTo -Value 0\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removehome"
-  },
-  "WPFTweaksRemoveGallery": {
-    "Content": "Remove Gallery from Explorer",
-    "Description": "Removes the Gallery from Explorer and sets This PC as default.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      Remove-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}\"\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removegallery"
-  },
-  "WPFTweaksDisplay": {
-    "Content": "Set Display for Performance",
-    "Description": "Sets the system preferences to performance. You can do this manually with sysdm.cpl as well.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\Control Panel\\Desktop",
-        "Name": "DragFullWindows",
-        "Value": "0",
-        "Type": "String",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Control Panel\\Desktop",
-        "Name": "MenuShowDelay",
-        "Value": "200",
-        "Type": "String",
-        "OriginalValue": "400"
-      },
-      {
-        "Path": "HKCU:\\Control Panel\\Desktop\\WindowMetrics",
-        "Name": "MinAnimate",
-        "Value": "0",
-        "Type": "String",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Control Panel\\Keyboard",
-        "Name": "KeyboardDelay",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "ListviewAlphaSelect",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "ListviewShadow",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "TaskbarAnimations",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects",
-        "Name": "VisualFXSetting",
-        "Value": "3",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\DWM",
-        "Name": "EnableAeroPeek",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "TaskbarMn",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "ShowTaskViewButton",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",
-        "Name": "SearchboxTaskbarMode",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      }
-    ],
-    "InvokeScript": [
-      "Set-ItemProperty -Path \"HKCU:\\Control Panel\\Desktop\" -Name \"UserPreferencesMask\" -Type Binary -Value ([byte[]](144,18,3,128,16,0,0,0))"
-    ],
-    "UndoScript": [
-      "Remove-ItemProperty -Path \"HKCU:\\Control Panel\\Desktop\" -Name \"UserPreferencesMask\""
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/display"
-  },
-  "WPFTweaksXboxRemoval": {
-    "Content": "Remove Xbox & Gaming Components",
-    "Description": "Removes Xbox services, the Xbox app, Game Bar, and related authentication components.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
-        "Name": "AppCaptureEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      }
-    ],
-    "appx": [
-      "Microsoft.XboxIdentityProvider",
-      "Microsoft.XboxSpeechToTextOverlay",
-      "Microsoft.GamingApp",
-      "Microsoft.Xbox.TCUI",
-      "Microsoft.XboxGamingOverlay"
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/xboxremoval"
-  },
-  "WPFTweaksDeBloat": {
-    "Content": "Remove Unwanted Pre-Installed Apps",
-    "Description": "This will remove a bunch of Windows pre-installed applications which most people dont want on there system.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "appx": [
-      "Microsoft.WindowsFeedbackHub",
-      "Microsoft.BingNews",
-      "Microsoft.BingSearch",
-      "Microsoft.BingWeather",
-      "Clipchamp.Clipchamp",
-      "Microsoft.Todos",
-      "Microsoft.PowerAutomateDesktop",
-      "Microsoft.MicrosoftSolitaireCollection",
-      "Microsoft.WindowsSoundRecorder",
-      "Microsoft.MicrosoftStickyNotes",
-      "Microsoft.Windows.DevHome",
-      "Microsoft.Paint",
-      "Microsoft.OutlookForWindows",
-      "Microsoft.WindowsAlarms",
-      "Microsoft.StartExperiencesApp",
-      "Microsoft.GetHelp",
-      "Microsoft.ZuneMusic",
-      "MicrosoftCorporationII.QuickAssist",
-      "MSTeams"
-    ],
-    "InvokeScript": [
-      "\r\n      $TeamsPath = \"$Env:LocalAppData\\Microsoft\\Teams\\Update.exe\"\r\n\r\n      if (Test-Path $TeamsPath) {\r\n        Write-Host \"Uninstalling Teams\"\r\n        Start-Process $TeamsPath -ArgumentList -uninstall -wait\r\n\r\n        Write-Host \"Deleting Teams directory\"\r\n        Remove-Item $TeamsPath -Recurse -Force\r\n      }\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/debloat"
-  },
-  "WPFTweaksRestorePoint": {
-    "Content": "Create Restore Point",
-    "Description": "Creates a restore point at runtime in case a revert is needed from WinUtil modifications.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "Checked": "False",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SystemRestore",
-        "Name": "SystemRestorePointCreationFrequency",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1440"
-      }
-    ],
-    "InvokeScript": [
-      "\r\n      if (-not (Get-ComputerRestorePoint)) {\r\n          Enable-ComputerRestore -Drive $Env:SystemDrive\r\n      }\r\n\r\n      Checkpoint-Computer -Description \"System Restore Point created by WinUtil\" -RestorePointType MODIFY_SETTINGS\r\n      Write-Host \"System Restore Point Created Successfully\" -ForegroundColor Green\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/restorepoint"
-  },
-  "WPFTweaksEndTaskOnTaskbar": {
-    "Content": "Enable End Task With Right Click",
-    "Description": "Enables option to end task when right clicking a program in the taskbar.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings",
-        "Name": "TaskbarEndTask",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/endtaskontaskbar"
-  },
-  "WPFTweaksPowershell7Tele": {
-    "Content": "Disable PowerShell 7 Telemetry",
-    "Description": "Creates an Environment Variable called 'POWERSHELL_TELEMETRY_OPTOUT' with a value of '1' which will tell PowerShell 7 to not send Telemetry Data.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "InvokeScript": [
-      "[Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT', '1', 'Machine')"
-    ],
-    "UndoScript": [
-      "[Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT', '', 'Machine')"
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/powershell7tele"
-  },
-  "WPFTweaksStorage": {
-    "Content": "Disable Storage Sense",
-    "Description": "Storage Sense deletes temp files automatically.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy",
-        "Name": "01",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/storage"
-  },
-  "WPFTweaksRemoveCopilot": {
-    "Content": "Remove Microsoft Copilot",
-    "Description": "Removes Copilot AppXPackages and related ai packages",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      Get-AppxPackage -AllUsers *Copilot* | Remove-AppxPackage -AllUsers\r\n      Get-AppxPackage -AllUsers Microsoft.MicrosoftOfficeHub | Remove-AppxPackage -AllUsers\r\n\r\n      $Appx = (Get-AppxPackage MicrosoftWindows.Client.CoreAI).PackageFullName\r\n      $Sid = (Get-LocalUser $Env:UserName).Sid.Value\r\n\r\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Appx\\AppxAllUserStore\\EndOfLife\\$Sid\\$Appx\" -Force\r\n      Remove-AppxPackage $Appx\r\n\r\n      Write-Host \"Copilot Removed\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Write-Host \"Installing Copilot...\"\r\n      winget install --name Copilot --source msstore --accept-package-agreements --accept-source-agreements --silent\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removecopilot"
-  },
-  "WPFTweaksWPBT": {
-    "Content": "Disable Windows Platform Binary Table (WPBT)",
-    "Description": "If enabled, WPBT allows your computer vendor to execute programs at boot time, such as anti-theft software, software drivers, as well as force install software without user consent. Poses potential security risk.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
-        "Name": "DisableWpbtExecution",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/wpbt"
-  },
-  "WPFTweaksRazerBlock": {
-    "Content": "Block Razer Software Installs",
-    "Description": "Blocks ALL Razer Software installations. The hardware works fine without any software.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\DriverSearching",
-        "Name": "SearchOrderConfig",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Device Installer",
-        "Name": "DisableCoInstallers",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0"
-      }
-    ],
-    "InvokeScript": [
-      "\r\n      $RazerPath = \"C:\\Windows\\Installer\\Razer\"\r\n\r\n      if (Test-Path $RazerPath) {\r\n        Remove-Item $RazerPath\\* -Recurse -Force\r\n      } else {\r\n        New-Item -Path $RazerPath -ItemType Directory\r\n      }\r\n\r\n      icacls $RazerPath /deny \"Everyone:(W)\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      icacls \"C:\\Windows\\Installer\\Razer\" /remove:d Everyone\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/razerblock"
-  },
-  "WPFTweaksDisableNotifications": {
-    "Content": "Disable Notification Tray/Calendar",
-    "Description": "Disables all Notifications INCLUDING Calendar.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer",
-        "Name": "DisableNotificationCenter",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications",
-        "Name": "ToastEnabled",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablenotifications"
-  },
-  "WPFTweaksBlockAdobeNet": {
-    "Content": "Adobe Network Block",
-    "Description": "Reduces user interruptions by selectively blocking connections to Adobe's activation and telemetry servers. Credit: Ruddernation-Designs",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      $hostsUrl = \"https://github.com/Ruddernation-Designs/Adobe-URL-Block-List/raw/refs/heads/master/hosts\"\r\n      $hosts = \"$Env:SystemRoot\\System32\\drivers\\etc\\hosts\"\r\n\r\n      Move-Item $hosts \"$hosts.bak\"\r\n      Invoke-WebRequest $hostsUrl -OutFile $hosts\r\n      ipconfig /flushdns\r\n\r\n      Write-Host \"Added Adobe url block list from host file\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      $hosts = \"$Env:SystemRoot\\System32\\drivers\\etc\\hosts\"\r\n\r\n      Remove-Item $hosts\r\n      Move-Item \"$hosts.bak\" $hosts\r\n      ipconfig /flushdns\r\n\r\n      Write-Host \"Removed Adobe url block list from host file\"\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/blockadobenet"
-  },
-  "WPFTweaksRightClickMenu": {
-    "Content": "Set Classic Right-Click Menu",
-    "Description": "Restores the classic context menu when right-clicking in File Explorer, replacing the simplified Windows 11 version.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      New-Item -Path \"HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\" -Name \"InprocServer32\" -force -value \"\"\r\n      Write-Host Restarting explorer.exe ...\r\n      Stop-Process -Name \"explorer\" -Force\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Remove-Item -Path \"HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\" -Recurse -Confirm:$false -Force\r\n      # Restarting Explorer in the Undo Script might not be necessary, as the Registry change without restarting Explorer does work, but just to make sure.\r\n      Write-Host Restarting explorer.exe ...\r\n      Stop-Process -Name \"explorer\" -Force\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/rightclickmenu"
-  },
-  "WPFTweaksDiskCleanup": {
-    "Content": "Run Disk Cleanup",
-    "Description": "Runs Disk Cleanup on Drive C: and removes old Windows Updates.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      cleanmgr.exe /d C: /VERYLOWDISK\r\n      Dism.exe /online /Cleanup-Image /StartComponentCleanup /ResetBase\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/diskcleanup"
-  },
-  "WPFTweaksDeleteTempFiles": {
-    "Content": "Delete Temporary Files",
-    "Description": "Erases TEMP Folders.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      Remove-Item -Path \"$Env:Temp\\*\" -Recurse -Force\r\n      Remove-Item -Path \"$Env:SystemRoot\\Temp\\*\" -Recurse -Force\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/deletetempfiles"
-  },
-  "WPFTweaksIPv46": {
-    "Content": "Prefer IPv4 over IPv6",
-    "Description": "Setting the IPv4 preference can have latency and security benefits on private networks where IPv6 is not configured.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters",
-        "Name": "DisabledComponents",
-        "Value": "32",
-        "Type": "DWord",
-        "OriginalValue": "0"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/ipv46"
-  },
-  "WPFTweaksTeredo": {
-    "Content": "Disable Teredo",
-    "Description": "Teredo network tunneling is an IPv6 feature that can cause additional latency, but may cause problems with some games.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters",
-        "Name": "DisabledComponents",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0"
-      }
-    ],
-    "InvokeScript": [
-      "netsh interface teredo set state disabled"
-    ],
-    "UndoScript": [
-      "netsh interface teredo set state default"
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/teredo"
-  },
-  "WPFTweaksDisableIPv6": {
-    "Content": "Disable IPv6",
-    "Description": "Disables IPv6.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters",
-        "Name": "DisabledComponents",
-        "Value": "255",
-        "Type": "DWord",
-        "OriginalValue": "0"
-      }
-    ],
-    "InvokeScript": [
-      "Disable-NetAdapterBinding -Name * -ComponentID ms_tcpip6"
-    ],
-    "UndoScript": [
-      "Enable-NetAdapterBinding -Name * -ComponentID ms_tcpip6"
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disableipv6"
-  },
-  "WPFTweaksDisableBGapps": {
-    "Content": "Disable Background Apps",
-    "Description": "Disables all Microsoft Store apps from running in the background, which has to be done individually since Windows 11.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\BackgroundAccessApplications",
-        "Name": "GlobalUserDisabled",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablebgapps"
-  },
-  "WPFTweaksDisableFSO": {
-    "Content": "Disable Fullscreen Optimizations",
-    "Description": "Disables FSO in all applications. NOTE: This will disable Color Management in Exclusive Fullscreen.",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "registry": [
-      {
-        "Path": "HKCU:\\System\\GameConfigStore",
-        "Name": "GameDVR_DXGIHonorFSEWindowsCompatible",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablefso"
-  },
-  "WPFToggleDarkMode": {
-    "Content": "Dark Theme for Windows",
-    "Description": "Enable/Disable Dark Mode.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-        "Name": "AppsUseLightTheme",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1",
-        "DefaultState": "false"
-      },
-      {
-        "Path": "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-        "Name": "SystemUsesLightTheme",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1",
-        "DefaultState": "false"
-      }
-    ],
-    "InvokeScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate\r\n      if ($sync.ThemeButton.Content -eq [char]0xF08C) {\r\n        Invoke-WinutilThemeChange -theme \"Auto\"\r\n      }\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate\r\n      if ($sync.ThemeButton.Content -eq [char]0xF08C) {\r\n        Invoke-WinutilThemeChange -theme \"Auto\"\r\n      }\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/darkmode"
-  },
-  "WPFToggleBingSearch": {
-    "Content": "Bing Search in Start Menu",
-    "Description": "If enabled, Bing web search results will be included in your Start Menu search.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",
-        "Name": "BingSearchEnabled",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/bingsearch"
-  },
-  "WPFToggleStandbyFix": {
-    "Content": "Modern Standby fix",
-    "Description": "Disable network connection during S0 Sleep. If network connectivity is turned on during S0 Sleep it could cause overheating on modern laptops.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Power\\PowerSettings\\f15576e8-98b7-4186-b944-eafa664402d9",
-        "Name": "ACSettingIndex",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>",
-        "DefaultState": "true"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/standbyfix"
-  },
-  "WPFToggleNumLock": {
-    "Content": "Num Lock on Startup",
-    "Description": "Toggle the Num Lock key state when your computer starts.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKU:\\.Default\\Control Panel\\Keyboard",
-        "Name": "InitialKeyboardIndicators",
-        "Value": "2",
-        "Type": "String",
-        "OriginalValue": "0",
-        "DefaultState": "false"
-      },
-      {
-        "Path": "HKCU:\\Control Panel\\Keyboard",
-        "Name": "InitialKeyboardIndicators",
-        "Value": "2",
-        "Type": "String",
-        "OriginalValue": "0",
-        "DefaultState": "false"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/numlock"
-  },
-  "WPFToggleVerboseLogon": {
-    "Content": "Verbose Messages During Logon",
-    "Description": "Show detailed messages during the login process for troubleshooting and diagnostics.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
-        "Name": "VerboseStatus",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "false"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/verboselogon"
-  },
-  "WPFToggleStartMenuRecommendations": {
-    "Content": "Recommendations in Start Menu",
-    "Description": "If disabled, then you will not see recommendations in the Start Menu. WARNING: This will also disable Windows Spotlight on your Lock Screen as a side effect.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Start",
-        "Name": "HideRecommendedSection",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1",
-        "DefaultState": "true"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Education",
-        "Name": "IsEducationEnvironment",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1",
-        "DefaultState": "true"
-      },
-      {
-        "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer",
-        "Name": "HideRecommendedSection",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1",
-        "DefaultState": "true"
-      }
-    ],
-    "InvokeScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/startmenurecommendations"
-  },
-  "WPFToggleHideSettingsHome": {
-    "Content": "Remove Settings Home Page",
-    "Description": "Removes the Home Page in the Windows Settings app.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
-        "Name": "SettingsPageVisibility",
-        "Value": "hide:home",
-        "Type": "String",
-        "OriginalValue": "show:home",
-        "DefaultState": "false"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/hidesettingshome"
-  },
-  "WPFToggleMouseAcceleration": {
-    "Content": "Mouse Acceleration",
-    "Description": "If enabled, the Cursor movement is affected by the speed of your physical mouse movements.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Control Panel\\Mouse",
-        "Name": "MouseSpeed",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      },
-      {
-        "Path": "HKCU:\\Control Panel\\Mouse",
-        "Name": "MouseThreshold1",
-        "Value": "6",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      },
-      {
-        "Path": "HKCU:\\Control Panel\\Mouse",
-        "Name": "MouseThreshold2",
-        "Value": "10",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/mouseacceleration"
-  },
-  "WPFToggleStickyKeys": {
-    "Content": "Sticky Keys",
-    "Description": "If enabled, Sticky Keys is activated. Sticky keys is an accessibility feature of some graphical user interfaces which assists users who have physical disabilities or help users reduce repetitive strain injury.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Control Panel\\Accessibility\\StickyKeys",
-        "Name": "Flags",
-        "Value": "506",
-        "Type": "DWord",
-        "OriginalValue": "58",
-        "DefaultState": "true"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/stickykeys"
-  },
-  "WPFToggleNewOutlook": {
-    "Content": "New Outlook",
-    "Description": "If disabled, it removes the new Outlook toggle, disables the new Outlook migration, and ensures the classic Outlook application is used.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Outlook\\Preferences",
-        "Name": "UseNewOutlook",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      },
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Office\\16.0\\Outlook\\Options\\General",
-        "Name": "HideNewOutlookToggle",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1",
-        "DefaultState": "true"
-      },
-      {
-        "Path": "HKCU:\\Software\\Policies\\Microsoft\\Office\\16.0\\Outlook\\Options\\General",
-        "Name": "DoNewOutlookAutoMigration",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "false"
-      },
-      {
-        "Path": "HKCU:\\Software\\Policies\\Microsoft\\Office\\16.0\\Outlook\\Preferences",
-        "Name": "NewOutlookMigrationUserSetting",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>",
-        "DefaultState": "true"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/newoutlook"
-  },
-  "WPFToggleMultiplaneOverlay": {
-    "Content": "Disable Multiplane Overlay",
-    "Description": "Disable the Multiplane Overlay which can sometimes cause issues with Graphics Cards.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\Dwm",
-        "Name": "OverlayTestMode",
-        "Value": "5",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>",
-        "DefaultState": "false"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/multiplaneoverlay"
-  },
-  "WPFToggleHiddenFiles": {
-    "Content": "Show Hidden Files",
-    "Description": "If enabled, Hidden Files will be shown.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "Hidden",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "false"
-      }
-    ],
-    "InvokeScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/hiddenfiles"
-  },
-  "WPFToggleShowExt": {
-    "Content": "Show File Extensions",
-    "Description": "If enabled, File extensions (e.g., .txt, .jpg) are visible.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "HideFileExt",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "1",
-        "DefaultState": "false"
-      }
-    ],
-    "InvokeScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/showext"
-  },
-  "WPFToggleTaskbarSearch": {
-    "Content": "Search Button in Taskbar",
-    "Description": "If enabled, Search Button will be on the Taskbar.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",
-        "Name": "SearchboxTaskbarMode",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskbarsearch"
-  },
-  "WPFToggleTaskView": {
-    "Content": "Task View Button in Taskbar",
-    "Description": "If enabled, Task View Button in Taskbar will be shown.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "ShowTaskViewButton",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskview"
-  },
-  "WPFToggleTaskbarAlignment": {
-    "Content": "Center Taskbar Items",
-    "Description": "[Windows 11] If enabled, the Taskbar Items will be shown on the Center, otherwise the Taskbar Items will be shown on the Left.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-        "Name": "TaskbarAl",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      }
-    ],
-    "InvokeScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskbaralignment"
-  },
-  "WPFToggleDetailedBSoD": {
-    "Content": "Detailed BSoD",
-    "Description": "If enabled, you will see a detailed Blue Screen of Death (BSOD) with more information.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CrashControl",
-        "Name": "DisplayParameters",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "false"
-      },
-      {
-        "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CrashControl",
-        "Name": "DisableEmoticon",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "false"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/detailedbsod"
-  },
-  "WPFToggleS3Sleep": {
-    "Content": "S3 Sleep",
-    "Description": "Toggles between Modern Standby and S3 Sleep.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power",
-        "Name": "PlatformAoAcOverride",
-        "Value": "0",
-        "Type": "DWord",
-        "OriginalValue": "<RemoveEntry>",
-        "DefaultState": "false"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/s3sleep"
-  },
-  "WPFOOSUbutton": {
-    "Content": "Run OO Shutup 10",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "Type": "Button",
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/oosubutton"
-  },
-  "WPFchangedns": {
-    "Content": "DNS",
-    "category": "z__Advanced Tweaks - CAUTION",
-    "panel": "1",
-    "Type": "Combobox",
-    "ComboItems": "Default DHCP Google Cloudflare Cloudflare_Malware Cloudflare_Malware_Adult Open_DNS Quad9 AdGuard_Ads_Trackers AdGuard_Ads_Trackers_Malware_Adult",
-    "link": "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/changedns"
-  },
-  "WPFAddUltPerf": {
-    "Content": "Add and Activate Ultimate Performance Profile",
-    "category": "Performance Plans",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "link": "https://winutil.christitus.com/dev/tweaks/performance-plans/addultperf"
-  },
-  "WPFRemoveUltPerf": {
-    "Content": "Remove Ultimate Performance Profile",
-    "category": "Performance Plans",
-    "panel": "2",
-    "Type": "Button",
-    "ButtonWidth": "300",
-    "link": "https://winutil.christitus.com/dev/tweaks/performance-plans/removeultperf"
-  },
-  "WPFTweaksDisableExplorerAutoDiscovery": {
-    "Content": "Disable Explorer Automatic Folder Discovery",
-    "Description": "Windows Explorer automatically tries to guess the type of the folder based on its contents, slowing down the browsing experience. WARNING! Will disable File Explorer grouping.",
-    "category": "Essential Tweaks",
-    "panel": "1",
-    "InvokeScript": [
-      "\r\n      # Previously detected folders\r\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\r\n\r\n      # Folder types lookup table\r\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\r\n\r\n      # Flush Explorer view database\r\n      Remove-Item -Path $bags -Recurse -Force\r\n      Write-Host \"Removed $bags\"\r\n\r\n      Remove-Item -Path $bagMRU -Recurse -Force\r\n      Write-Host \"Removed $bagMRU\"\r\n\r\n      # Every folder\r\n      $allFolders = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\\AllFolders\\Shell\"\r\n\r\n      if (!(Test-Path $allFolders)) {\r\n        New-Item -Path $allFolders -Force\r\n        Write-Host \"Created $allFolders\"\r\n      }\r\n\r\n      # Generic view\r\n      New-ItemProperty -Path $allFolders -Name \"FolderType\" -Value \"NotSpecified\" -PropertyType String -Force\r\n      Write-Host \"Set FolderType to NotSpecified\"\r\n\r\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\r\n      "
-    ],
-    "UndoScript": [
-      "\r\n      # Previously detected folders\r\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\r\n\r\n      # Folder types lookup table\r\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\r\n\r\n      # Flush Explorer view database\r\n      Remove-Item -Path $bags -Recurse -Force\r\n      Write-Host \"Removed $bags\"\r\n\r\n      Remove-Item -Path $bagMRU -Recurse -Force\r\n      Write-Host \"Removed $bagMRU\"\r\n\r\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\r\n      "
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/essential-tweaks/disableexplorerautodiscovery"
-  },
-  "WPFToggleDisableCrossDeviceResume": {
-    "Content": "Cross-Device Resume",
-    "Description": "This tweak controls the Resume function in Windows 11 24H2 and later, which allows you to resume an activity from a mobile device and vice-versa.",
-    "category": "Customize Preferences",
-    "panel": "2",
-    "Type": "Toggle",
-    "registry": [
-      {
-        "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CrossDeviceResume\\Configuration",
-        "Name": "IsResumeAllowed",
-        "Value": "1",
-        "Type": "DWord",
-        "OriginalValue": "0",
-        "DefaultState": "true"
-      }
-    ],
-    "link": "https://winutil.christitus.com/dev/tweaks/customize-preferences/disablecrossdeviceresume"
-  }
+    "WPFTweaksActivity":  {
+                              "Content":  "Activity History - Disable",
+                              "Description":  "Erases recent docs, clipboard, and run history.",
+                              "category":  "Essential Tweaks",
+                              "panel":  "1",
+                              "registry":  [
+                                               {
+                                                   "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+                                                   "Name":  "EnableActivityFeed",
+                                                   "Value":  "0",
+                                                   "Type":  "DWord",
+                                                   "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                               },
+                                               {
+                                                   "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+                                                   "Name":  "PublishUserActivities",
+                                                   "Value":  "0",
+                                                   "Type":  "DWord",
+                                                   "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                               },
+                                               {
+                                                   "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+                                                   "Name":  "UploadUserActivities",
+                                                   "Value":  "0",
+                                                   "Type":  "DWord",
+                                                   "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                               }
+                                           ],
+                              "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/activity"
+                          },
+    "WPFTweaksHiber":  {
+                           "Content":  "Hibernation - Disable",
+                           "Description":  "Hibernation is really meant for laptops as it saves what\u0027s in memory before turning the PC off. It really should never be used.",
+                           "category":  "Essential Tweaks",
+                           "panel":  "1",
+                           "registry":  [
+                                            {
+                                                "Path":  "HKLM:\\System\\CurrentControlSet\\Control\\Session Manager\\Power",
+                                                "Name":  "HibernateEnabled",
+                                                "Value":  "0",
+                                                "Type":  "DWord",
+                                                "OriginalValue":  "1"
+                                            },
+                                            {
+                                                "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FlyoutMenuSettings",
+                                                "Name":  "ShowHibernateOption",
+                                                "Value":  "0",
+                                                "Type":  "DWord",
+                                                "OriginalValue":  "1"
+                                            }
+                                        ],
+                           "InvokeScript":  [
+                                                "powercfg.exe /hibernate off"
+                                            ],
+                           "UndoScript":  [
+                                              "powercfg.exe /hibernate on"
+                                          ],
+                           "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/hiber"
+                       },
+    "WPFTweaksWidget":  {
+                            "Content":  "Widgets - Remove",
+                            "Description":  "Removes the annoying widgets in the bottom left of the Taskbar.",
+                            "category":  "Essential Tweaks",
+                            "panel":  "1",
+                            "InvokeScript":  [
+                                                 "\r\n      # Sometimes if you dont stop the Widgets process the removal may fail\r\n\r\n      Get-Process *Widget* | Stop-Process\r\n      Get-AppxPackage Microsoft.WidgetsPlatformRuntime -AllUsers | Remove-AppxPackage -AllUsers\r\n      Get-AppxPackage MicrosoftWindows.Client.WebExperience -AllUsers | Remove-AppxPackage -AllUsers\r\n\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      Write-Host \"Removed widgets\"\r\n      "
+                                             ],
+                            "UndoScript":  [
+                                               "\r\n      Write-Host \"Restoring widgets AppxPackages\"\r\n\r\n      Add-AppxPackage -Register \"C:\\Program Files\\WindowsApps\\Microsoft.WidgetsPlatformRuntime*\\AppxManifest.xml\" -DisableDevelopmentMode\r\n      Add-AppxPackage -Register \"C:\\Program Files\\WindowsApps\\MicrosoftWindows.Client.WebExperience*\\AppxManifest.xml\" -DisableDevelopmentMode\r\n\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                           ],
+                            "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/widget"
+                        },
+    "WPFTweaksRevertStartMenu":  {
+                                     "Content":  "Start Menu Previous Layout - Enable",
+                                     "Description":  "Bring back the old Start Menu layout from before the gradual rollout of the new one in 25H2.",
+                                     "category":  "Essential Tweaks",
+                                     "panel":  "1",
+                                     "InvokeScript":  [
+                                                          "\r\n      Invoke-WebRequest https://github.com/thebookisclosed/ViVe/releases/download/v0.3.4/ViVeTool-v0.3.4-IntelAmd.zip -OutFile ViVeTool.zip\r\n\r\n      Expand-Archive ViVeTool.zip\r\n      Remove-Item ViVeTool.zip\r\n\r\n      Start-Process \u0027ViVeTool\\ViVeTool.exe\u0027 -ArgumentList \u0027/disable /id:47205210\u0027 -Wait -NoNewWindow\r\n\r\n      Remove-Item ViVeTool -Recurse\r\n\r\n      Write-Host \u0027Old start menu reverted. Please restart your computer to take effect.\u0027\r\n      "
+                                                      ],
+                                     "UndoScript":  [
+                                                        "\r\n      Invoke-WebRequest https://github.com/thebookisclosed/ViVe/releases/download/v0.3.4/ViVeTool-v0.3.4-IntelAmd.zip -OutFile ViVeTool.zip\r\n\r\n      Expand-Archive ViVeTool.zip\r\n      Remove-Item ViVeTool.zip\r\n\r\n      Start-Process \u0027ViVeTool\\ViVeTool.exe\u0027 -ArgumentList \u0027/enable /id:47205210\u0027 -Wait -NoNewWindow\r\n\r\n      Remove-Item ViVeTool -Recurse\r\n\r\n      Write-Host \u0027New start menu reverted. Please restart your computer to take effect.\u0027\r\n      "
+                                                    ],
+                                     "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/revertstartmenu"
+                                 },
+    "WPFTweaksDisableStoreSearch":  {
+                                        "Content":  "Microsoft Store Recommended Search Results - Disable",
+                                        "Description":  "Will not display recommended Microsoft Store apps when searching for apps in the Start menu.",
+                                        "category":  "Essential Tweaks",
+                                        "panel":  "1",
+                                        "InvokeScript":  [
+                                                             "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /deny Everyone:F"
+                                                         ],
+                                        "UndoScript":  [
+                                                           "icacls \"$Env:LocalAppData\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalState\\store.db\" /grant Everyone:F"
+                                                       ],
+                                        "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/disablestoresearch"
+                                    },
+    "WPFTweaksLocation":  {
+                              "Content":  "Location Tracking - Disable",
+                              "Description":  "Disables Location Tracking.",
+                              "category":  "Essential Tweaks",
+                              "panel":  "1",
+                              "service":  [
+                                              {
+                                                  "Name":  "lfsvc",
+                                                  "StartupType":  "Disable",
+                                                  "OriginalType":  "Manual"
+                                              }
+                                          ],
+                              "registry":  [
+                                               {
+                                                   "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location",
+                                                   "Name":  "Value",
+                                                   "Value":  "Deny",
+                                                   "Type":  "String",
+                                                   "OriginalValue":  "Allow"
+                                               },
+                                               {
+                                                   "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Sensor\\Overrides\\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}",
+                                                   "Name":  "SensorPermissionState",
+                                                   "Value":  "0",
+                                                   "Type":  "DWord",
+                                                   "OriginalValue":  "1"
+                                               },
+                                               {
+                                                   "Path":  "HKLM:\\SYSTEM\\Maps",
+                                                   "Name":  "AutoUpdateEnabled",
+                                                   "Value":  "0",
+                                                   "Type":  "DWord",
+                                                   "OriginalValue":  "1"
+                                               }
+                                           ],
+                              "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/location"
+                          },
+    "WPFTweaksServices":  {
+                              "Content":  "Services - Set to Manual",
+                              "Description":  "Turns a bunch of system services to manual that don\u0027t need to be running all the time. This is pretty harmless as if the service is needed, it will simply start on demand.",
+                              "category":  "Essential Tweaks",
+                              "panel":  "1",
+                              "service":  [
+                                              {
+                                                  "Name":  "CscService",
+                                                  "StartupType":  "Disabled",
+                                                  "OriginalType":  "Manual"
+                                              },
+                                              {
+                                                  "Name":  "DiagTrack",
+                                                  "StartupType":  "Disabled",
+                                                  "OriginalType":  "Automatic"
+                                              },
+                                              {
+                                                  "Name":  "MapsBroker",
+                                                  "StartupType":  "Manual",
+                                                  "OriginalType":  "Automatic"
+                                              },
+                                              {
+                                                  "Name":  "RemoteAccess",
+                                                  "StartupType":  "Disabled",
+                                                  "OriginalType":  "Disabled"
+                                              },
+                                              {
+                                                  "Name":  "RemoteRegistry",
+                                                  "StartupType":  "Disabled",
+                                                  "OriginalType":  "Disabled"
+                                              },
+                                              {
+                                                  "Name":  "StorSvc",
+                                                  "StartupType":  "Manual",
+                                                  "OriginalType":  "Automatic"
+                                              },
+                                              {
+                                                  "Name":  "SharedAccess",
+                                                  "StartupType":  "Disabled",
+                                                  "OriginalType":  "Automatic"
+                                              },
+                                              {
+                                                  "Name":  "TermService",
+                                                  "StartupType":  "Manual",
+                                                  "OriginalType":  "Manual"
+                                              },
+                                              {
+                                                  "Name":  "TroubleshootingSvc",
+                                                  "StartupType":  "Manual",
+                                                  "OriginalType":  "Manual"
+                                              },
+                                              {
+                                                  "Name":  "seclogon",
+                                                  "StartupType":  "Manual",
+                                                  "OriginalType":  "Manual"
+                                              },
+                                              {
+                                                  "Name":  "ssh-agent",
+                                                  "StartupType":  "Disabled",
+                                                  "OriginalType":  "Disabled"
+                                              }
+                                          ],
+                              "InvokeScript":  [
+                                                   "\r\n      $Memory = (Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum / 1KB\r\n      Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Control\" -Name SvcHostSplitThresholdInKB -Value $Memory\r\n      "
+                                               ],
+                              "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/services"
+                          },
+    "WPFTweaksBraveDebloat":  {
+                                  "Content":  "Brave Browser - Debloat",
+                                  "Description":  "Disables various annoyances like Brave Rewards, Leo AI, Crypto Wallet and VPN.",
+                                  "category":  "z__Advanced Tweaks - CAUTION",
+                                  "panel":  "1",
+                                  "registry":  [
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "BraveRewardsDisabled",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "BraveWalletDisabled",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "BraveVPNDisabled",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "BraveAIChatEnabled",
+                                                       "Value":  "0",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "BraveStatsPingEnabled",
+                                                       "Value":  "0",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "BraveNewsDisabled",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "BraveTalkDisabled",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "TorDisabled",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "BraveP3AEnabled",
+                                                       "Value":  "0",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "UrlKeyedAnonymizedDataCollectionEnabled",
+                                                       "Value":  "0",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "SafeBrowsingExtendedReportingEnabled",
+                                                       "Value":  "0",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave",
+                                                       "Name":  "MetricsReportingEnabled",
+                                                       "Value":  "0",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                   }
+                                               ],
+                                  "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/bravedebloat"
+                              },
+    "WPFTweaksDisableWarningForUnsignedRdp":  {
+                                                  "Content":  "RDP Unsigned File Warnings - Disable",
+                                                  "Description":  "Disables warnings shown when launching unsigned RDP files introduced with the latest Windows 10 and 11 updates.",
+                                                  "category":  "z__Advanced Tweaks - CAUTION",
+                                                  "panel":  "1",
+                                                  "registry":  [
+                                                                   {
+                                                                       "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Terminal Services\\Client",
+                                                                       "Name":  "RedirectionWarningDialogVersion",
+                                                                       "Value":  "1",
+                                                                       "Type":  "DWord",
+                                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                                   },
+                                                                   {
+                                                                       "Path":  "HKCU:\\SOFTWARE\\Microsoft\\Terminal Server Client",
+                                                                       "Name":  "RdpLaunchConsentAccepted",
+                                                                       "Value":  "1",
+                                                                       "Type":  "DWord",
+                                                                       "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                                   }
+                                                               ],
+                                                  "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablewarningforunsignedrdp"
+                                              },
+    "WPFTweaksEdgeDebloat":  {
+                                 "Content":  "Microsoft Edge - Debloat",
+                                 "Description":  "Disables various telemetry options, popups, and other annoyances in Edge.",
+                                 "category":  "z__Advanced Tweaks - CAUTION",
+                                 "panel":  "1",
+                                 "registry":  [
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\EdgeUpdate",
+                                                      "Name":  "CreateDesktopShortcutDefault",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "PersonalizationReportingEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge\\ExtensionInstallBlocklist",
+                                                      "Name":  "1",
+                                                      "Value":  "ofefcgjbeghpigppfmkologfjadafddi",
+                                                      "Type":  "String",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "ShowRecommendationsEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "HideFirstRunExperience",
+                                                      "Value":  "1",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "UserFeedbackAllowed",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "ConfigureDoNotTrack",
+                                                      "Value":  "1",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "AlternateErrorPagesEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "EdgeCollectionsEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "EdgeShoppingAssistantEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "MicrosoftEdgeInsiderPromotionEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "ShowMicrosoftRewards",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "WebWidgetAllowed",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "DiagnosticData",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "EdgeAssetDeliveryServiceEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "WalletDonationEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  },
+                                                  {
+                                                      "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+                                                      "Name":  "DefaultBrowserSettingsCampaignEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                  }
+                                              ],
+                                 "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/edgedebloat"
+                             },
+    "WPFTweaksConsumerFeatures":  {
+                                      "Content":  "ConsumerFeatures - Disable",
+                                      "Description":  "Windows will not automatically install any games, third-party apps, or application links from the Windows Store for the signed-in user. Some default Apps will be inaccessible (eg. Phone Link).",
+                                      "category":  "Essential Tweaks",
+                                      "panel":  "1",
+                                      "registry":  [
+                                                       {
+                                                           "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",
+                                                           "Name":  "DisableWindowsConsumerFeatures",
+                                                           "Value":  "1",
+                                                           "Type":  "DWord",
+                                                           "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                       }
+                                                   ],
+                                      "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/consumerfeatures"
+                                  },
+    "WPFTweaksTelemetry":  {
+                               "Content":  "Telemetry - Disable",
+                               "Description":  "Disables Microsoft Telemetry.",
+                               "category":  "Essential Tweaks",
+                               "panel":  "1",
+                               "registry":  [
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",
+                                                    "Name":  "Enabled",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Privacy",
+                                                    "Name":  "TailoredExperiencesWithDiagnosticDataEnabled",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\Speech_OneCore\\Settings\\OnlineSpeechPrivacy",
+                                                    "Name":  "HasAccepted",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\Input\\TIPC",
+                                                    "Name":  "Enabled",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\InputPersonalization",
+                                                    "Name":  "RestrictImplicitInkCollection",
+                                                    "Value":  "1",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\InputPersonalization",
+                                                    "Name":  "RestrictImplicitTextCollection",
+                                                    "Value":  "1",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\InputPersonalization\\TrainedDataStore",
+                                                    "Name":  "HarvestContacts",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\Personalization\\Settings",
+                                                    "Name":  "AcceptedPrivacyPolicy",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection",
+                                                    "Name":  "AllowTelemetry",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                    "Name":  "Start_TrackProgs",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+                                                    "Name":  "PublishUserActivities",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                },
+                                                {
+                                                    "Path":  "HKCU:\\Software\\Microsoft\\Siuf\\Rules",
+                                                    "Name":  "NumberOfSIUFInPeriod",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                }
+                                            ],
+                               "InvokeScript":  [
+                                                    "\r\n      # Disable Defender Auto Sample Submission\r\n      Set-MpPreference -SubmitSamplesConsent 2\r\n\r\n      # Disable (Connected User Experiences and Telemetry) Service\r\n      Set-Service -Name diagtrack -StartupType Disabled\r\n\r\n      # Disable (Windows Error Reporting Manager) Service\r\n      Set-Service -Name wermgr -StartupType Disabled\r\n\r\n      Remove-ItemProperty -Path \"HKCU:\\Software\\Microsoft\\Siuf\\Rules\" -Name PeriodInNanoSeconds\r\n      "
+                                                ],
+                               "UndoScript":  [
+                                                  "\r\n      # Enable Defender Auto Sample Submission\r\n      Set-MpPreference -SubmitSamplesConsent 1\r\n\r\n      # Enable (Connected User Experiences and Telemetry) Service\r\n      Set-Service -Name diagtrack -StartupType Automatic\r\n\r\n      # Enable (Windows Error Reporting Manager) Service\r\n      Set-Service -Name wermgr -StartupType Automatic\r\n      "
+                                              ],
+                               "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/telemetry"
+                           },
+    "WPFTweaksRemoveEdge":  {
+                                "Content":  "Microsoft Edge - Remove",
+                                "Description":  "Unblocks Microsoft Edge uninstaller restrictions then uses that uninstaller to remove Microsoft Edge.",
+                                "category":  "z__Advanced Tweaks - CAUTION",
+                                "panel":  "1",
+                                "InvokeScript":  [
+                                                     "Invoke-WinUtilRemoveEdge"
+                                                 ],
+                                "UndoScript":  [
+                                                   "\r\n      Write-Host \u0027Installing Microsoft Edge...\u0027\r\n      winget install Microsoft.Edge --source winget\r\n      "
+                                               ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removeedge"
+                            },
+    "WPFTweaksUTC":  {
+                         "Content":  "Date \u0026 Time - Set Time to UTC",
+                         "Description":  "Essential for computers that are dual booting. Fixes the time sync with Linux systems.",
+                         "category":  "z__Advanced Tweaks - CAUTION",
+                         "panel":  "1",
+                         "registry":  [
+                                          {
+                                              "Path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation",
+                                              "Name":  "RealTimeIsUniversal",
+                                              "Value":  "1",
+                                              "Type":  "QWord",
+                                              "OriginalValue":  "0"
+                                          }
+                                      ],
+                         "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/utc"
+                     },
+    "WPFTweaksRemoveOneDrive":  {
+                                    "Content":  "Microsoft OneDrive - Remove",
+                                    "Description":  "Denies permission to remove OneDrive user files, then uses its own uninstaller to remove it and restores the original permission afterward.",
+                                    "category":  "z__Advanced Tweaks - CAUTION",
+                                    "panel":  "1",
+                                    "InvokeScript":  [
+                                                         "\r\n      # Deny permission to remove OneDrive folder\r\n      icacls $Env:OneDrive /deny \"Administrators:(D,DC)\"\r\n\r\n      Write-Host \"Uninstalling OneDrive...\"\r\n      Start-Process \u0027C:\\Windows\\System32\\OneDriveSetup.exe\u0027 -ArgumentList \u0027/uninstall\u0027 -Wait\r\n\r\n      # Some of OneDrive files use explorer, and OneDrive uses FileCoAuth\r\n      Write-Host \"Removing leftover OneDrive Files...\"\r\n      Stop-Process -Name FileCoAuth,Explorer\r\n      Remove-Item \"$Env:LocalAppData\\Microsoft\\OneDrive\" -Recurse -Force\r\n      Remove-Item \"C:\\ProgramData\\Microsoft OneDrive\" -Recurse -Force\r\n\r\n      # Grant back permission to access OneDrive folder\r\n      icacls $Env:OneDrive /grant \"Administrators:(D,DC)\"\r\n\r\n      # Disable OneSyncSvc\r\n      Set-Service -Name OneSyncSvc -StartupType Disabled\r\n      "
+                                                     ],
+                                    "UndoScript":  [
+                                                       "\r\n      Write-Host \"Installing OneDrive\"\r\n      winget install Microsoft.Onedrive --source winget\r\n\r\n      # Enabled OneSyncSvc\r\n      Set-Service -Name OneSyncSvc -StartupType Automatic\r\n      "
+                                                   ],
+                                    "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removeonedrive"
+                                },
+    "WPFTweaksRemoveHome":  {
+                                "Content":  "File Explorer Home - Disable",
+                                "Description":  "Removes the Home from Explorer and sets This PC as default.",
+                                "category":  "z__Advanced Tweaks - CAUTION",
+                                "panel":  "1",
+                                "InvokeScript":  [
+                                                     "\r\n      Remove-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}\"\r\n      Set-ItemProperty -Path \"HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" -Name LaunchTo -Value 1\r\n      "
+                                                 ],
+                                "UndoScript":  [
+                                                   "\r\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}\"\r\n      Set-ItemProperty -Path \"HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" -Name LaunchTo -Value 0\r\n      "
+                                               ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removehome"
+                            },
+    "WPFTweaksRemoveGallery":  {
+                                   "Content":  "File Explorer Gallery - Disable",
+                                   "Description":  "Removes the Gallery from Explorer and sets This PC as default.",
+                                   "category":  "z__Advanced Tweaks - CAUTION",
+                                   "panel":  "1",
+                                   "InvokeScript":  [
+                                                        "\r\n      Remove-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}\"\r\n      "
+                                                    ],
+                                   "UndoScript":  [
+                                                      "\r\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}\"\r\n      "
+                                                  ],
+                                   "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removegallery"
+                               },
+    "WPFTweaksDisplay":  {
+                             "Content":  "Visual Effects - Set to Best Performance",
+                             "Description":  "Sets the system preferences to performance. You can do this manually with sysdm.cpl as well.",
+                             "category":  "z__Advanced Tweaks - CAUTION",
+                             "panel":  "1",
+                             "registry":  [
+                                              {
+                                                  "Path":  "HKCU:\\Control Panel\\Desktop",
+                                                  "Name":  "DragFullWindows",
+                                                  "Value":  "0",
+                                                  "Type":  "String",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Control Panel\\Desktop",
+                                                  "Name":  "MenuShowDelay",
+                                                  "Value":  "200",
+                                                  "Type":  "String",
+                                                  "OriginalValue":  "400"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Control Panel\\Desktop\\WindowMetrics",
+                                                  "Name":  "MinAnimate",
+                                                  "Value":  "0",
+                                                  "Type":  "String",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Control Panel\\Keyboard",
+                                                  "Name":  "KeyboardDelay",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                  "Name":  "ListviewAlphaSelect",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                  "Name":  "ListviewShadow",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                  "Name":  "TaskbarAnimations",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects",
+                                                  "Name":  "VisualFXSetting",
+                                                  "Value":  "3",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\DWM",
+                                                  "Name":  "EnableAeroPeek",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                  "Name":  "TaskbarMn",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                  "Name":  "ShowTaskViewButton",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",
+                                                  "Name":  "SearchboxTaskbarMode",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              }
+                                          ],
+                             "InvokeScript":  [
+                                                  "Set-ItemProperty -Path \"HKCU:\\Control Panel\\Desktop\" -Name \"UserPreferencesMask\" -Type Binary -Value ([byte[]](144,18,3,128,16,0,0,0))"
+                                              ],
+                             "UndoScript":  [
+                                                "Remove-ItemProperty -Path \"HKCU:\\Control Panel\\Desktop\" -Name \"UserPreferencesMask\""
+                                            ],
+                             "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/display"
+                         },
+    "WPFTweaksXboxRemoval":  {
+                                 "Content":  "Xbox \u0026 Gaming Components - Remove",
+                                 "Description":  "Removes Xbox services, the Xbox app, Game Bar, and related authentication components.",
+                                 "category":  "z__Advanced Tweaks - CAUTION",
+                                 "panel":  "1",
+                                 "registry":  [
+                                                  {
+                                                      "Path":  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
+                                                      "Name":  "AppCaptureEnabled",
+                                                      "Value":  "0",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "1"
+                                                  }
+                                              ],
+                                 "appx":  [
+                                              "Microsoft.XboxIdentityProvider",
+                                              "Microsoft.XboxSpeechToTextOverlay",
+                                              "Microsoft.GamingApp",
+                                              "Microsoft.Xbox.TCUI",
+                                              "Microsoft.XboxGamingOverlay"
+                                          ],
+                                 "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/xboxremoval"
+                             },
+    "WPFTweaksDeBloat":  {
+                             "Content":  "Unwanted Pre-Installed Apps - Remove",
+                             "Description":  "This will remove a bunch of Windows pre-installed applications which most people dont want on there system.",
+                             "category":  "z__Advanced Tweaks - CAUTION",
+                             "panel":  "1",
+                             "appx":  [
+                                          "Microsoft.WindowsFeedbackHub",
+                                          "Microsoft.BingNews",
+                                          "Microsoft.BingSearch",
+                                          "Microsoft.BingWeather",
+                                          "Clipchamp.Clipchamp",
+                                          "Microsoft.Todos",
+                                          "Microsoft.PowerAutomateDesktop",
+                                          "Microsoft.MicrosoftSolitaireCollection",
+                                          "Microsoft.WindowsSoundRecorder",
+                                          "Microsoft.MicrosoftStickyNotes",
+                                          "Microsoft.Windows.DevHome",
+                                          "Microsoft.Paint",
+                                          "Microsoft.OutlookForWindows",
+                                          "Microsoft.WindowsAlarms",
+                                          "Microsoft.StartExperiencesApp",
+                                          "Microsoft.GetHelp",
+                                          "Microsoft.ZuneMusic",
+                                          "MicrosoftCorporationII.QuickAssist",
+                                          "MSTeams"
+                                      ],
+                             "InvokeScript":  [
+                                                  "\r\n      $TeamsPath = \"$Env:LocalAppData\\Microsoft\\Teams\\Update.exe\"\r\n\r\n      if (Test-Path $TeamsPath) {\r\n        Write-Host \"Uninstalling Teams\"\r\n        Start-Process $TeamsPath -ArgumentList -uninstall -wait\r\n\r\n        Write-Host \"Deleting Teams directory\"\r\n        Remove-Item $TeamsPath -Recurse -Force\r\n      }\r\n      "
+                                              ],
+                             "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/debloat"
+                         },
+    "WPFTweaksRestorePoint":  {
+                                  "Content":  "Restore Point - Create",
+                                  "Description":  "Creates a restore point at runtime in case a revert is needed from WinUtil modifications.",
+                                  "category":  "Essential Tweaks",
+                                  "panel":  "1",
+                                  "Checked":  "False",
+                                  "registry":  [
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SystemRestore",
+                                                       "Name":  "SystemRestorePointCreationFrequency",
+                                                       "Value":  "0",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "1440"
+                                                   }
+                                               ],
+                                  "InvokeScript":  [
+                                                       "\r\n      if (-not (Get-ComputerRestorePoint)) {\r\n          Enable-ComputerRestore -Drive $Env:SystemDrive\r\n      }\r\n\r\n      Checkpoint-Computer -Description \"System Restore Point created by WinUtil\" -RestorePointType MODIFY_SETTINGS\r\n      Write-Host \"System Restore Point Created Successfully\" -ForegroundColor Green\r\n      "
+                                                   ],
+                                  "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/restorepoint"
+                              },
+    "WPFTweaksEndTaskOnTaskbar":  {
+                                      "Content":  "End Task With Right Click - Enable",
+                                      "Description":  "Enables option to end task when right clicking a program in the taskbar.",
+                                      "category":  "Essential Tweaks",
+                                      "panel":  "1",
+                                      "registry":  [
+                                                       {
+                                                           "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings",
+                                                           "Name":  "TaskbarEndTask",
+                                                           "Value":  "1",
+                                                           "Type":  "DWord",
+                                                           "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                       }
+                                                   ],
+                                      "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/endtaskontaskbar"
+                                  },
+    "WPFTweaksPowershell7Tele":  {
+                                     "Content":  "PowerShell 7 Telemetry - Disable",
+                                     "Description":  "Creates an Environment Variable called \u0027POWERSHELL_TELEMETRY_OPTOUT\u0027 with a value of \u00271\u0027 which will tell PowerShell 7 to not send Telemetry Data.",
+                                     "category":  "Essential Tweaks",
+                                     "panel":  "1",
+                                     "InvokeScript":  [
+                                                          "[Environment]::SetEnvironmentVariable(\u0027POWERSHELL_TELEMETRY_OPTOUT\u0027, \u00271\u0027, \u0027Machine\u0027)"
+                                                      ],
+                                     "UndoScript":  [
+                                                        "[Environment]::SetEnvironmentVariable(\u0027POWERSHELL_TELEMETRY_OPTOUT\u0027, \u0027\u0027, \u0027Machine\u0027)"
+                                                    ],
+                                     "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/powershell7tele"
+                                 },
+    "WPFTweaksStorage":  {
+                             "Content":  "Storage Sense - Disable",
+                             "Description":  "Storage Sense deletes temp files automatically.",
+                             "category":  "z__Advanced Tweaks - CAUTION",
+                             "panel":  "1",
+                             "registry":  [
+                                              {
+                                                  "Path":  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy",
+                                                  "Name":  "01",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1"
+                                              }
+                                          ],
+                             "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/storage"
+                         },
+    "WPFTweaksRemoveCopilot":  {
+                                   "Content":  "Microsoft Copilot - Disable",
+                                   "Description":  "Removes Copilot AppXPackages and related ai packages",
+                                   "category":  "z__Advanced Tweaks - CAUTION",
+                                   "panel":  "1",
+                                   "InvokeScript":  [
+                                                        "\r\n      Get-AppxPackage -AllUsers *Copilot* | Remove-AppxPackage -AllUsers\r\n      Get-AppxPackage -AllUsers Microsoft.MicrosoftOfficeHub | Remove-AppxPackage -AllUsers\r\n\r\n      $Appx = (Get-AppxPackage MicrosoftWindows.Client.CoreAI).PackageFullName\r\n      $Sid = (Get-LocalUser $Env:UserName).Sid.Value\r\n\r\n      New-Item \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Appx\\AppxAllUserStore\\EndOfLife\\$Sid\\$Appx\" -Force\r\n      Remove-AppxPackage $Appx\r\n\r\n      Write-Host \"Copilot Removed\"\r\n      "
+                                                    ],
+                                   "UndoScript":  [
+                                                      "\r\n      Write-Host \"Installing Copilot...\"\r\n      winget install --name Copilot --source msstore --accept-package-agreements --accept-source-agreements --silent\r\n      "
+                                                  ],
+                                   "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/removecopilot"
+                               },
+    "WPFTweaksWPBT":  {
+                          "Content":  "Windows Platform Binary Table (WPBT) - Disable",
+                          "Description":  "If enabled, WPBT allows your computer vendor to execute programs at boot time, such as anti-theft software, software drivers, as well as force install software without user consent. Poses potential security risk.",
+                          "category":  "Essential Tweaks",
+                          "panel":  "1",
+                          "registry":  [
+                                           {
+                                               "Path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+                                               "Name":  "DisableWpbtExecution",
+                                               "Value":  "1",
+                                               "Type":  "DWord",
+                                               "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                           }
+                                       ],
+                          "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/wpbt"
+                      },
+    "WPFTweaksRazerBlock":  {
+                                "Content":  "Razer Software Auto-Install - Disable",
+                                "Description":  "Blocks ALL Razer Software installations. The hardware works fine without any software.",
+                                "category":  "z__Advanced Tweaks - CAUTION",
+                                "panel":  "1",
+                                "registry":  [
+                                                 {
+                                                     "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\DriverSearching",
+                                                     "Name":  "SearchOrderConfig",
+                                                     "Value":  "0",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "1"
+                                                 },
+                                                 {
+                                                     "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Device Installer",
+                                                     "Name":  "DisableCoInstallers",
+                                                     "Value":  "1",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "0"
+                                                 }
+                                             ],
+                                "InvokeScript":  [
+                                                     "\r\n      $RazerPath = \"C:\\Windows\\Installer\\Razer\"\r\n\r\n      if (Test-Path $RazerPath) {\r\n        Remove-Item $RazerPath\\* -Recurse -Force\r\n      } else {\r\n        New-Item -Path $RazerPath -ItemType Directory\r\n      }\r\n\r\n      icacls $RazerPath /deny \"Everyone:(W)\"\r\n      "
+                                                 ],
+                                "UndoScript":  [
+                                                   "\r\n      icacls \"C:\\Windows\\Installer\\Razer\" /remove:d Everyone\r\n      "
+                                               ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/razerblock"
+                            },
+    "WPFTweaksDisableNotifications":  {
+                                          "Content":  "System Tray Notifications \u0026 Calendar - Disable",
+                                          "Description":  "Disables all Notifications INCLUDING Calendar.",
+                                          "category":  "z__Advanced Tweaks - CAUTION",
+                                          "panel":  "1",
+                                          "registry":  [
+                                                           {
+                                                               "Path":  "HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer",
+                                                               "Name":  "DisableNotificationCenter",
+                                                               "Value":  "1",
+                                                               "Type":  "DWord",
+                                                               "OriginalValue":  "\u003cRemoveEntry\u003e"
+                                                           },
+                                                           {
+                                                               "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications",
+                                                               "Name":  "ToastEnabled",
+                                                               "Value":  "0",
+                                                               "Type":  "DWord",
+                                                               "OriginalValue":  "1"
+                                                           }
+                                                       ],
+                                          "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablenotifications"
+                                      },
+    "WPFTweaksBlockAdobeNet":  {
+                                   "Content":  "Adobe URL Block List - Enable",
+                                   "Description":  "Reduces user interruptions by selectively blocking connections to Adobe\u0027s activation and telemetry servers. Credit: Ruddernation-Designs",
+                                   "category":  "z__Advanced Tweaks - CAUTION",
+                                   "panel":  "1",
+                                   "InvokeScript":  [
+                                                        "\r\n      $hostsUrl = \"https://github.com/Ruddernation-Designs/Adobe-URL-Block-List/raw/refs/heads/master/hosts\"\r\n      $hosts = \"$Env:SystemRoot\\System32\\drivers\\etc\\hosts\"\r\n\r\n      Move-Item $hosts \"$hosts.bak\"\r\n      Invoke-WebRequest $hostsUrl -OutFile $hosts\r\n      ipconfig /flushdns\r\n\r\n      Write-Host \"Added Adobe url block list from host file\"\r\n      "
+                                                    ],
+                                   "UndoScript":  [
+                                                      "\r\n      $hosts = \"$Env:SystemRoot\\System32\\drivers\\etc\\hosts\"\r\n\r\n      Remove-Item $hosts\r\n      Move-Item \"$hosts.bak\" $hosts\r\n      ipconfig /flushdns\r\n\r\n      Write-Host \"Removed Adobe url block list from host file\"\r\n      "
+                                                  ],
+                                   "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/blockadobenet"
+                               },
+    "WPFTweaksRightClickMenu":  {
+                                    "Content":  "Right-Click Menu Previous Layout - Enable",
+                                    "Description":  "Restores the classic context menu when right-clicking in File Explorer, replacing the simplified Windows 11 version.",
+                                    "category":  "z__Advanced Tweaks - CAUTION",
+                                    "panel":  "1",
+                                    "InvokeScript":  [
+                                                         "\r\n      New-Item -Path \"HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\" -Name \"InprocServer32\" -force -value \"\"\r\n      Write-Host Restarting explorer.exe ...\r\n      Stop-Process -Name \"explorer\" -Force\r\n      "
+                                                     ],
+                                    "UndoScript":  [
+                                                       "\r\n      Remove-Item -Path \"HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\" -Recurse -Confirm:$false -Force\r\n      # Restarting Explorer in the Undo Script might not be necessary, as the Registry change without restarting Explorer does work, but just to make sure.\r\n      Write-Host Restarting explorer.exe ...\r\n      Stop-Process -Name \"explorer\" -Force\r\n      "
+                                                   ],
+                                    "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/rightclickmenu"
+                                },
+    "WPFTweaksDiskCleanup":  {
+                                 "Content":  "Disk Cleanup - Run",
+                                 "Description":  "Runs Disk Cleanup on Drive C: and removes old Windows Updates.",
+                                 "category":  "Essential Tweaks",
+                                 "panel":  "1",
+                                 "InvokeScript":  [
+                                                      "\r\n      cleanmgr.exe /d C: /VERYLOWDISK\r\n      Dism.exe /online /Cleanup-Image /StartComponentCleanup /ResetBase\r\n      "
+                                                  ],
+                                 "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/diskcleanup"
+                             },
+    "WPFTweaksDeleteTempFiles":  {
+                                     "Content":  "Temporary Files - Remove",
+                                     "Description":  "Erases TEMP Folders.",
+                                     "category":  "Essential Tweaks",
+                                     "panel":  "1",
+                                     "InvokeScript":  [
+                                                          "\r\n      Remove-Item -Path \"$Env:Temp\\*\" -Recurse -Force\r\n      Remove-Item -Path \"$Env:SystemRoot\\Temp\\*\" -Recurse -Force\r\n      "
+                                                      ],
+                                     "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/deletetempfiles"
+                                 },
+    "WPFTweaksIPv46":  {
+                           "Content":  "IPv6 - Set IPv4 as Preferred",
+                           "Description":  "Setting the IPv4 preference can have latency and security benefits on private networks where IPv6 is not configured.",
+                           "category":  "z__Advanced Tweaks - CAUTION",
+                           "panel":  "1",
+                           "registry":  [
+                                            {
+                                                "Path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters",
+                                                "Name":  "DisabledComponents",
+                                                "Value":  "32",
+                                                "Type":  "DWord",
+                                                "OriginalValue":  "0"
+                                            }
+                                        ],
+                           "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/ipv46"
+                       },
+    "WPFTweaksTeredo":  {
+                            "Content":  "Teredo - Disable",
+                            "Description":  "Teredo network tunneling is an IPv6 feature that can cause additional latency, but may cause problems with some games.",
+                            "category":  "z__Advanced Tweaks - CAUTION",
+                            "panel":  "1",
+                            "registry":  [
+                                             {
+                                                 "Path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters",
+                                                 "Name":  "DisabledComponents",
+                                                 "Value":  "1",
+                                                 "Type":  "DWord",
+                                                 "OriginalValue":  "0"
+                                             }
+                                         ],
+                            "InvokeScript":  [
+                                                 "netsh interface teredo set state disabled"
+                                             ],
+                            "UndoScript":  [
+                                               "netsh interface teredo set state default"
+                                           ],
+                            "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/teredo"
+                        },
+    "WPFTweaksDisableIPv6":  {
+                                 "Content":  "IPv6 - Disable",
+                                 "Description":  "Disables IPv6.",
+                                 "category":  "z__Advanced Tweaks - CAUTION",
+                                 "panel":  "1",
+                                 "registry":  [
+                                                  {
+                                                      "Path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters",
+                                                      "Name":  "DisabledComponents",
+                                                      "Value":  "255",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "0"
+                                                  }
+                                              ],
+                                 "InvokeScript":  [
+                                                      "Disable-NetAdapterBinding -Name * -ComponentID ms_tcpip6"
+                                                  ],
+                                 "UndoScript":  [
+                                                    "Enable-NetAdapterBinding -Name * -ComponentID ms_tcpip6"
+                                                ],
+                                 "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disableipv6"
+                             },
+    "WPFTweaksDisableBGapps":  {
+                                   "Content":  "Background Apps - Disable",
+                                   "Description":  "Disables all Microsoft Store apps from running in the background, which has to be done individually since Windows 11.",
+                                   "category":  "z__Advanced Tweaks - CAUTION",
+                                   "panel":  "1",
+                                   "registry":  [
+                                                    {
+                                                        "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\BackgroundAccessApplications",
+                                                        "Name":  "GlobalUserDisabled",
+                                                        "Value":  "1",
+                                                        "Type":  "DWord",
+                                                        "OriginalValue":  "0"
+                                                    }
+                                                ],
+                                   "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablebgapps"
+                               },
+    "WPFTweaksDisableFSO":  {
+                                "Content":  "Fullscreen Optimizations - Disable",
+                                "Description":  "Disables FSO in all applications. NOTE: This will disable Color Management in Exclusive Fullscreen.",
+                                "category":  "z__Advanced Tweaks - CAUTION",
+                                "panel":  "1",
+                                "registry":  [
+                                                 {
+                                                     "Path":  "HKCU:\\System\\GameConfigStore",
+                                                     "Name":  "GameDVR_DXGIHonorFSEWindowsCompatible",
+                                                     "Value":  "1",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "0"
+                                                 }
+                                             ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/disablefso"
+                            },
+    "WPFToggleDisableCrossDeviceResume":  {
+                                              "Content":  "Cross-Device Resume",
+                                              "Description":  "This tweak controls the Resume function in Windows 11 24H2 and later, which allows you to resume an activity from a mobile device and vice-versa.",
+                                              "category":  "Customize Preferences",
+                                              "panel":  "2",
+                                              "Type":  "Toggle",
+                                              "registry":  [
+                                                               {
+                                                                   "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CrossDeviceResume\\Configuration",
+                                                                   "Name":  "IsResumeAllowed",
+                                                                   "Value":  "1",
+                                                                   "Type":  "DWord",
+                                                                   "OriginalValue":  "0",
+                                                                   "DefaultState":  "true"
+                                                               }
+                                                           ],
+                                              "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/disablecrossdeviceresume"
+                                          },
+    "WPFToggleDetailedBSoD":  {
+                                  "Content":  "BSoD Verbose Mode",
+                                  "Description":  "If enabled, you will see a detailed Blue Screen of Death (BSOD) with more information.",
+                                  "category":  "Customize Preferences",
+                                  "panel":  "2",
+                                  "Type":  "Toggle",
+                                  "registry":  [
+                                                   {
+                                                       "Path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CrashControl",
+                                                       "Name":  "DisplayParameters",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "0",
+                                                       "DefaultState":  "false"
+                                                   },
+                                                   {
+                                                       "Path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CrashControl",
+                                                       "Name":  "DisableEmoticon",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "0",
+                                                       "DefaultState":  "false"
+                                                   }
+                                               ],
+                                  "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/detailedbsod"
+                              },
+    "WPFToggleBatteryPercentage":  {
+                                       "Content":  "System Tray Battery Percentage",
+                                       "Description":  "If enabled, Shows numeric battery percentage next to the battery icon in the system tray.",
+                                       "category":  "Customize Preferences",
+                                       "panel":  "2",
+                                       "Type":  "Toggle",
+                                       "registry":  [
+                                                        {
+                                                            "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                            "Name":  "IsBatteryPercentageEnabled",
+                                                            "Value":  "1",
+                                                            "Type":  "DWord",
+                                                            "OriginalValue":  "\u003cRemoveEntry\u003e",
+                                                            "DefaultState":  "false"
+                                                        }
+                                                    ],
+                                       "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/batterypercentage"
+                                   },
+    "WPFToggleDarkMode":  {
+                              "Content":  "Dark Theme for Windows",
+                              "Description":  "Enable/Disable Dark Mode.",
+                              "category":  "Customize Preferences",
+                              "panel":  "2",
+                              "Type":  "Toggle",
+                              "registry":  [
+                                               {
+                                                   "Path":  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                                                   "Name":  "AppsUseLightTheme",
+                                                   "Value":  "0",
+                                                   "Type":  "DWord",
+                                                   "OriginalValue":  "1",
+                                                   "DefaultState":  "false"
+                                               },
+                                               {
+                                                   "Path":  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                                                   "Name":  "SystemUsesLightTheme",
+                                                   "Value":  "0",
+                                                   "Type":  "DWord",
+                                                   "OriginalValue":  "1",
+                                                   "DefaultState":  "false"
+                                               }
+                                           ],
+                              "InvokeScript":  [
+                                                   "\r\n      Invoke-WinUtilExplorerUpdate\r\n      if ($sync.ThemeButton.Content -eq [char]0xF08C) {\r\n        Invoke-WinutilThemeChange -theme \"Auto\"\r\n      }\r\n      "
+                                               ],
+                              "UndoScript":  [
+                                                 "\r\n      Invoke-WinUtilExplorerUpdate\r\n      if ($sync.ThemeButton.Content -eq [char]0xF08C) {\r\n        Invoke-WinutilThemeChange -theme \"Auto\"\r\n      }\r\n      "
+                                             ],
+                              "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/darkmode"
+                          },
+    "WPFToggleShowExt":  {
+                             "Content":  "File Explorer File Extensions",
+                             "Description":  "If enabled, File extensions (e.g., .txt, .jpg) are visible.",
+                             "category":  "Customize Preferences",
+                             "panel":  "2",
+                             "Type":  "Toggle",
+                             "registry":  [
+                                              {
+                                                  "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                  "Name":  "HideFileExt",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "1",
+                                                  "DefaultState":  "false"
+                                              }
+                                          ],
+                             "InvokeScript":  [
+                                                  "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                              ],
+                             "UndoScript":  [
+                                                "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                            ],
+                             "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/showext"
+                         },
+    "WPFToggleHiddenFiles":  {
+                                 "Content":  "File Explorer Hidden Files",
+                                 "Description":  "If enabled, Hidden Files will be shown.",
+                                 "category":  "Customize Preferences",
+                                 "panel":  "2",
+                                 "Type":  "Toggle",
+                                 "registry":  [
+                                                  {
+                                                      "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                      "Name":  "Hidden",
+                                                      "Value":  "1",
+                                                      "Type":  "DWord",
+                                                      "OriginalValue":  "0",
+                                                      "DefaultState":  "false"
+                                                  }
+                                              ],
+                                 "InvokeScript":  [
+                                                      "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                                  ],
+                                 "UndoScript":  [
+                                                    "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                                ],
+                                 "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/hiddenfiles"
+                             },
+    "WPFToggleVerboseLogon":  {
+                                  "Content":  "Logon Verbose Mode",
+                                  "Description":  "Show detailed messages during the login process for troubleshooting and diagnostics.",
+                                  "category":  "Customize Preferences",
+                                  "panel":  "2",
+                                  "Type":  "Toggle",
+                                  "registry":  [
+                                                   {
+                                                       "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                                                       "Name":  "VerboseStatus",
+                                                       "Value":  "1",
+                                                       "Type":  "DWord",
+                                                       "OriginalValue":  "0",
+                                                       "DefaultState":  "false"
+                                                   }
+                                               ],
+                                  "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/verboselogon"
+                              },
+    "WPFToggleNewOutlook":  {
+                                "Content":  "Microsoft Outlook New Version",
+                                "Description":  "If disabled, it removes the new Outlook toggle, disables the new Outlook migration, and ensures the classic Outlook application is used.",
+                                "category":  "Customize Preferences",
+                                "panel":  "2",
+                                "Type":  "Toggle",
+                                "registry":  [
+                                                 {
+                                                     "Path":  "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Outlook\\Preferences",
+                                                     "Name":  "UseNewOutlook",
+                                                     "Value":  "1",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "0",
+                                                     "DefaultState":  "true"
+                                                 },
+                                                 {
+                                                     "Path":  "HKCU:\\Software\\Microsoft\\Office\\16.0\\Outlook\\Options\\General",
+                                                     "Name":  "HideNewOutlookToggle",
+                                                     "Value":  "0",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "1",
+                                                     "DefaultState":  "true"
+                                                 },
+                                                 {
+                                                     "Path":  "HKCU:\\Software\\Policies\\Microsoft\\Office\\16.0\\Outlook\\Options\\General",
+                                                     "Name":  "DoNewOutlookAutoMigration",
+                                                     "Value":  "0",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "0",
+                                                     "DefaultState":  "false"
+                                                 },
+                                                 {
+                                                     "Path":  "HKCU:\\Software\\Policies\\Microsoft\\Office\\16.0\\Outlook\\Preferences",
+                                                     "Name":  "NewOutlookMigrationUserSetting",
+                                                     "Value":  "0",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "\u003cRemoveEntry\u003e",
+                                                     "DefaultState":  "true"
+                                                 }
+                                             ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/newoutlook"
+                            },
+    "WPFToggleScrollbars":  {
+                                "Content":  "Scrollbars Always Visible",
+                                "Description":  "If enabled, scrollbars will always be visible. If disabled, Windows will automatically hide scrollbars when not in use.",
+                                "category":  "Customize Preferences",
+                                "panel":  "2",
+                                "Type":  "Toggle",
+                                "registry":  [
+                                                 {
+                                                     "Path":  "HKCU:\\Control Panel\\Accessibility",
+                                                     "Name":  "DynamicScrollbars",
+                                                     "Value":  "0",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "1",
+                                                     "DefaultState":  "false",
+                                                     "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/scrollbars"
+                                                 }
+                                             ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/scrollbars"
+                            },
+    "WPFToggleMultiplaneOverlay":  {
+                                       "Content":  "Multiplane Overlay",
+                                       "Description":  "Enable or disable the Multiplane Overlay, which can sometimes cause issues with graphics cards.",
+                                       "category":  "Customize Preferences",
+                                       "panel":  "2",
+                                       "Type":  "Toggle",
+                                       "registry":  [
+                                                        {
+                                                            "Path":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\Dwm",
+                                                            "Name":  "OverlayTestMode",
+                                                            "Value":  "0",
+                                                            "Type":  "DWord",
+                                                            "OriginalValue":  "5",
+                                                            "DefaultState":  "true"
+                                                        }
+                                                    ],
+                                       "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/multiplaneoverlay"
+                                   },
+    "WPFToggleMouseAcceleration":  {
+                                       "Content":  "Mouse Acceleration",
+                                       "Description":  "If enabled, the Cursor movement is affected by the speed of your physical mouse movements.",
+                                       "category":  "Customize Preferences",
+                                       "panel":  "2",
+                                       "Type":  "Toggle",
+                                       "registry":  [
+                                                        {
+                                                            "Path":  "HKCU:\\Control Panel\\Mouse",
+                                                            "Name":  "MouseSpeed",
+                                                            "Value":  "1",
+                                                            "Type":  "DWord",
+                                                            "OriginalValue":  "0",
+                                                            "DefaultState":  "true"
+                                                        },
+                                                        {
+                                                            "Path":  "HKCU:\\Control Panel\\Mouse",
+                                                            "Name":  "MouseThreshold1",
+                                                            "Value":  "6",
+                                                            "Type":  "DWord",
+                                                            "OriginalValue":  "0",
+                                                            "DefaultState":  "true"
+                                                        },
+                                                        {
+                                                            "Path":  "HKCU:\\Control Panel\\Mouse",
+                                                            "Name":  "MouseThreshold2",
+                                                            "Value":  "10",
+                                                            "Type":  "DWord",
+                                                            "OriginalValue":  "0",
+                                                            "DefaultState":  "true"
+                                                        }
+                                                    ],
+                                       "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/mouseacceleration"
+                                   },
+    "WPFToggleNumLock":  {
+                             "Content":  "Num Lock on Startup",
+                             "Description":  "Toggle the Num Lock key state when your computer starts.",
+                             "category":  "Customize Preferences",
+                             "panel":  "2",
+                             "Type":  "Toggle",
+                             "registry":  [
+                                              {
+                                                  "Path":  "HKU:\\.Default\\Control Panel\\Keyboard",
+                                                  "Name":  "InitialKeyboardIndicators",
+                                                  "Value":  "2",
+                                                  "Type":  "String",
+                                                  "OriginalValue":  "0",
+                                                  "DefaultState":  "false"
+                                              },
+                                              {
+                                                  "Path":  "HKCU:\\Control Panel\\Keyboard",
+                                                  "Name":  "InitialKeyboardIndicators",
+                                                  "Value":  "2",
+                                                  "Type":  "String",
+                                                  "OriginalValue":  "0",
+                                                  "DefaultState":  "false"
+                                              }
+                                          ],
+                             "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/numlock"
+                         },
+    "WPFToggleStandbyFix":  {
+                                "Content":  "S0 Sleep Network Connectivity",
+                                "Description":  "Enable or disable network connectivity during S0 Sleep.",
+                                "category":  "Customize Preferences",
+                                "panel":  "2",
+                                "Type":  "Toggle",
+                                "registry":  [
+                                                 {
+                                                     "Path":  "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Power\\PowerSettings\\f15576e8-98b7-4186-b944-eafa664402d9",
+                                                     "Name":  "ACSettingIndex",
+                                                     "Value":  "1",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "0",
+                                                     "DefaultState":  "true"
+                                                 }
+                                             ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/standbyfix"
+                            },
+    "WPFToggleS3Sleep":  {
+                             "Content":  "S3 Sleep",
+                             "Description":  "Toggles between Modern Standby and S3 Sleep.",
+                             "category":  "Customize Preferences",
+                             "panel":  "2",
+                             "Type":  "Toggle",
+                             "registry":  [
+                                              {
+                                                  "Path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power",
+                                                  "Name":  "PlatformAoAcOverride",
+                                                  "Value":  "0",
+                                                  "Type":  "DWord",
+                                                  "OriginalValue":  "\u003cRemoveEntry\u003e",
+                                                  "DefaultState":  "false"
+                                              }
+                                          ],
+                             "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/s3sleep"
+                         },
+    "WPFToggleHideSettingsHome":  {
+                                      "Content":  "Settings Home Page",
+                                      "Description":  "Enable or disable the Home Page in the Windows Settings app.",
+                                      "category":  "Customize Preferences",
+                                      "panel":  "2",
+                                      "Type":  "Toggle",
+                                      "registry":  [
+                                                       {
+                                                           "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+                                                           "Name":  "SettingsPageVisibility",
+                                                           "Value":  "show:home",
+                                                           "Type":  "String",
+                                                           "OriginalValue":  "hide:home",
+                                                           "DefaultState":  "true"
+                                                       }
+                                                   ],
+                                      "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/hidesettingshome"
+                                  },
+    "WPFToggleBingSearch":  {
+                                "Content":  "Start Menu Bing Search",
+                                "Description":  "If enabled, Bing web search results will be included in your Start Menu search.",
+                                "category":  "Customize Preferences",
+                                "panel":  "2",
+                                "Type":  "Toggle",
+                                "registry":  [
+                                                 {
+                                                     "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",
+                                                     "Name":  "BingSearchEnabled",
+                                                     "Value":  "1",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "0",
+                                                     "DefaultState":  "true"
+                                                 }
+                                             ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/bingsearch"
+                            },
+    "WPFToggleLoginBlur":  {
+                               "Content":  "Logon Screen Acrylic Blur",
+                               "Description":  "If disabled, the acrylic blur effect will be removed on the Windows 10/11 login screen background.",
+                               "category":  "Customize Preferences",
+                               "panel":  "2",
+                               "Type":  "Toggle",
+                               "registry":  [
+                                                {
+                                                    "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+                                                    "Name":  "DisableAcrylicBackgroundOnLogon",
+                                                    "Value":  "0",
+                                                    "Type":  "DWord",
+                                                    "OriginalValue":  "1",
+                                                    "DefaultState":  "true"
+                                                }
+                                            ],
+                               "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/loginblur"
+                           },
+    "WPFToggleStartMenuRecommendations":  {
+                                              "Content":  "Start Menu Recommendations",
+                                              "Description":  "If disabled, then you will not see recommendations in the Start Menu. WARNING: This will also disable Windows Spotlight on your Lock Screen as a side effect.",
+                                              "category":  "Customize Preferences",
+                                              "panel":  "2",
+                                              "Type":  "Toggle",
+                                              "registry":  [
+                                                               {
+                                                                   "Path":  "HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Start",
+                                                                   "Name":  "HideRecommendedSection",
+                                                                   "Value":  "0",
+                                                                   "Type":  "DWord",
+                                                                   "OriginalValue":  "1",
+                                                                   "DefaultState":  "true"
+                                                               },
+                                                               {
+                                                                   "Path":  "HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Education",
+                                                                   "Name":  "IsEducationEnvironment",
+                                                                   "Value":  "0",
+                                                                   "Type":  "DWord",
+                                                                   "OriginalValue":  "1",
+                                                                   "DefaultState":  "true"
+                                                               },
+                                                               {
+                                                                   "Path":  "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer",
+                                                                   "Name":  "HideRecommendedSection",
+                                                                   "Value":  "0",
+                                                                   "Type":  "DWord",
+                                                                   "OriginalValue":  "1",
+                                                                   "DefaultState":  "true"
+                                                               }
+                                                           ],
+                                              "InvokeScript":  [
+                                                                   "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                                               ],
+                                              "UndoScript":  [
+                                                                 "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                                             ],
+                                              "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/startmenurecommendations"
+                                          },
+    "WPFToggleStickyKeys":  {
+                                "Content":  "Sticky Keys",
+                                "Description":  "If enabled, Sticky Keys is activated. Sticky keys is an accessibility feature of some graphical user interfaces which assists users who have physical disabilities or help users reduce repetitive strain injury.",
+                                "category":  "Customize Preferences",
+                                "panel":  "2",
+                                "Type":  "Toggle",
+                                "registry":  [
+                                                 {
+                                                     "Path":  "HKCU:\\Control Panel\\Accessibility\\StickyKeys",
+                                                     "Name":  "Flags",
+                                                     "Value":  "506",
+                                                     "Type":  "DWord",
+                                                     "OriginalValue":  "58",
+                                                     "DefaultState":  "true"
+                                                 }
+                                             ],
+                                "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/stickykeys"
+                            },
+    "WPFToggleTaskbarAlignment":  {
+                                      "Content":  "Taskbar Centered Icons",
+                                      "Description":  "[Windows 11] If enabled, the Taskbar Items will be shown on the Center, otherwise the Taskbar Items will be shown on the Left.",
+                                      "category":  "Customize Preferences",
+                                      "panel":  "2",
+                                      "Type":  "Toggle",
+                                      "registry":  [
+                                                       {
+                                                           "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                           "Name":  "TaskbarAl",
+                                                           "Value":  "1",
+                                                           "Type":  "DWord",
+                                                           "OriginalValue":  "0",
+                                                           "DefaultState":  "true"
+                                                       }
+                                                   ],
+                                      "InvokeScript":  [
+                                                           "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                                       ],
+                                      "UndoScript":  [
+                                                         "\r\n      Invoke-WinUtilExplorerUpdate -action \"restart\"\r\n      "
+                                                     ],
+                                      "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskbaralignment"
+                                  },
+    "WPFToggleTaskbarSearch":  {
+                                   "Content":  "Taskbar Search Icon",
+                                   "Description":  "If enabled, Search Button will be on the Taskbar.",
+                                   "category":  "Customize Preferences",
+                                   "panel":  "2",
+                                   "Type":  "Toggle",
+                                   "registry":  [
+                                                    {
+                                                        "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",
+                                                        "Name":  "SearchboxTaskbarMode",
+                                                        "Value":  "1",
+                                                        "Type":  "DWord",
+                                                        "OriginalValue":  "0",
+                                                        "DefaultState":  "true"
+                                                    }
+                                                ],
+                                   "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskbarsearch"
+                               },
+    "WPFToggleTaskView":  {
+                              "Content":  "Taskbar Task View Icon",
+                              "Description":  "If enabled, Task View Button in Taskbar will be shown.",
+                              "category":  "Customize Preferences",
+                              "panel":  "2",
+                              "Type":  "Toggle",
+                              "registry":  [
+                                               {
+                                                   "Path":  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                                   "Name":  "ShowTaskViewButton",
+                                                   "Value":  "1",
+                                                   "Type":  "DWord",
+                                                   "OriginalValue":  "0",
+                                                   "DefaultState":  "true"
+                                               }
+                                           ],
+                              "link":  "https://winutil.christitus.com/dev/tweaks/customize-preferences/taskview"
+                          },
+    "WPFOOSUbutton":  {
+                          "Content":  "O\u0026O ShutUp10++ - Run",
+                          "category":  "z__Advanced Tweaks - CAUTION",
+                          "panel":  "1",
+                          "Type":  "Button",
+                          "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/oosubutton"
+                      },
+    "WPFchangedns":  {
+                         "Content":  "DNS - Set to:",
+                         "category":  "z__Advanced Tweaks - CAUTION",
+                         "panel":  "1",
+                         "Type":  "Combobox",
+                         "ComboItems":  "Default DHCP Google Cloudflare Cloudflare_Malware Cloudflare_Malware_Adult Open_DNS Quad9 AdGuard_Ads_Trackers AdGuard_Ads_Trackers_Malware_Adult",
+                         "link":  "https://winutil.christitus.com/dev/tweaks/z--advanced-tweaks---caution/changedns"
+                     },
+    "WPFAddUltPerf":  {
+                          "Content":  "Ultimate Performance Profile - Enable",
+                          "category":  "Performance Plans",
+                          "panel":  "2",
+                          "Type":  "Button",
+                          "ButtonWidth":  "300",
+                          "link":  "https://winutil.christitus.com/dev/tweaks/performance-plans/addultperf"
+                      },
+    "WPFRemoveUltPerf":  {
+                             "Content":  "Ultimate Performance Profile - Disable",
+                             "category":  "Performance Plans",
+                             "panel":  "2",
+                             "Type":  "Button",
+                             "ButtonWidth":  "300",
+                             "link":  "https://winutil.christitus.com/dev/tweaks/performance-plans/removeultperf"
+                         },
+    "WPFTweaksDisableExplorerAutoDiscovery":  {
+                                                  "Content":  "File Explorer Automatic Folder Discovery - Disable",
+                                                  "Description":  "Windows Explorer automatically tries to guess the type of the folder based on its contents, slowing down the browsing experience. WARNING! Will disable File Explorer grouping.",
+                                                  "category":  "Essential Tweaks",
+                                                  "panel":  "1",
+                                                  "InvokeScript":  [
+                                                                       "\r\n      # Previously detected folders\r\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\r\n\r\n      # Folder types lookup table\r\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\r\n\r\n      # Flush Explorer view database\r\n      Remove-Item -Path $bags -Recurse -Force\r\n      Write-Host \"Removed $bags\"\r\n\r\n      Remove-Item -Path $bagMRU -Recurse -Force\r\n      Write-Host \"Removed $bagMRU\"\r\n\r\n      # Every folder\r\n      $allFolders = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\\AllFolders\\Shell\"\r\n\r\n      if (!(Test-Path $allFolders)) {\r\n        New-Item -Path $allFolders -Force\r\n        Write-Host \"Created $allFolders\"\r\n      }\r\n\r\n      # Generic view\r\n      New-ItemProperty -Path $allFolders -Name \"FolderType\" -Value \"NotSpecified\" -PropertyType String -Force\r\n      Write-Host \"Set FolderType to NotSpecified\"\r\n\r\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\r\n      "
+                                                                   ],
+                                                  "UndoScript":  [
+                                                                     "\r\n      # Previously detected folders\r\n      $bags = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\"\r\n\r\n      # Folder types lookup table\r\n      $bagMRU = \"HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\"\r\n\r\n      # Flush Explorer view database\r\n      Remove-Item -Path $bags -Recurse -Force\r\n      Write-Host \"Removed $bags\"\r\n\r\n      Remove-Item -Path $bagMRU -Recurse -Force\r\n      Write-Host \"Removed $bagMRU\"\r\n\r\n      Write-Host Please sign out and back in, or restart your computer to apply the changes!\r\n      "
+                                                                 ],
+                                                  "link":  "https://winutil.christitus.com/dev/tweaks/essential-tweaks/disableexplorerautodiscovery"
+                                              }
 }
 '@ | ConvertFrom-Json
 $inputXML = @'
@@ -14666,7 +13791,7 @@ $inputXML = @'
                     <!-- Steps 1-4 -->
                     <StackPanel Grid.Row="0">
 
-                            <!-- ??? STEP 1 : Select Windows 11 ISO ??????????????? -->
+                            <!-- ????????? STEP 1 : Select Windows 11 ISO ????????????????????????????????????????????? -->
                             <Grid Name="WPFWin11ISOSelectSection" Margin="5" HorizontalAlignment="Left" MinWidth="{DynamicResource ButtonWidth}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -14755,7 +13880,7 @@ $inputXML = @'
                                 </Border>
                             </Grid>
 
-                            <!-- ??? STEP 2 : Mount & Verify ISO ???????????????????? -->
+                            <!-- ????????? STEP 2 : Mount & Verify ISO ???????????????????????????????????????????????????????????? -->
                             <Grid Name="WPFWin11ISOMountSection"
                                   Margin="5"
                                   Visibility="Collapsed"
@@ -14822,7 +13947,7 @@ $inputXML = @'
                                 </Border>
                             </Grid>
 
-                            <!-- ??? STEP 3 : Modify install.wim ????????????????????? -->
+                            <!-- ????????? STEP 3 : Modify install.wim ??????????????????????????????????????????????????????????????? -->
                             <StackPanel Name="WPFWin11ISOModifySection"
                                         Margin="5"
                                         Visibility="Collapsed"
@@ -14846,7 +13971,7 @@ $inputXML = @'
                                         Height="{DynamicResource ButtonHeight}"/>
                             </StackPanel>
 
-                            <!-- ??? STEP 4 : Output Options ????????????????????????? -->
+                            <!-- ????????? STEP 4 : Output Options ??????????????????????????????????????????????????????????????????????????? -->
                             <StackPanel Name="WPFWin11ISOOutputSection"
                                         Margin="5"
                                         Visibility="Collapsed"
@@ -14872,7 +13997,7 @@ $inputXML = @'
                                             Margin="12,0,0,0"/>
                                 </Grid>
 
-                                <!-- ?? Choice prompt buttons ?? -->
+                                <!-- ?????? Choice prompt buttons ?????? -->
                                 <Grid Margin="0,0,0,12">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -14894,7 +14019,7 @@ $inputXML = @'
                                             Height="{DynamicResource ButtonHeight}"/>
                                 </Grid>
 
-                                <!-- ?? USB write sub-panel (revealed on USB choice) ?? -->
+                                <!-- ?????? USB write sub-panel (revealed on USB choice) ?????? -->
                                 <Border Name="WPFWin11ISOOptionUSB"
                                         Style="{StaticResource BorderStyle}"
                                         Visibility="Collapsed"
@@ -15396,6 +14521,8 @@ $scripts = @(
         reg.exe delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v WUServer /f;
         reg.exe delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v WUStatusServer /f;
         reg.exe delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" /v DODownloadMode /f;
+        reg.exe add "HKLM\Software\Policies\Microsoft\Windows\OneDrive" /v DisableFileSyncNGSC /t REG_DWORD /d 0 /f;
+        reg.exe add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f;
         reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\BITS" /v Start /t REG_DWORD /d 3 /f;
         reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\wuauserv" /v Start /t REG_DWORD /d 3 /f;
         reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\UsoSvc" /v Start /t REG_DWORD /d 2 /f;
@@ -16009,7 +15136,7 @@ $sync["FontScalingApplyButton"].Add_Click({
     Invoke-WPFPopup -Action "Hide" -Popups @("FontScaling")
 })
 
-# ?? Win11ISO Tab button handlers ??????????????????????????????????????????????
+# ?????? Win11ISO Tab button handlers ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 $sync["WPFTab5BT"].Add_Click({
     $sync["Form"].Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [action]{ Invoke-WinUtilISOCheckExistingWork }) | Out-Null
@@ -16062,7 +15189,7 @@ $sync["WPFWin11ISOCleanResetButton"].Add_Click({
     Invoke-WinUtilISOCleanAndReset
 })
 
-# ??????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 $sync["Form"].ShowDialog() | out-null
 Stop-Transcript
