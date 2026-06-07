@@ -29,9 +29,6 @@
     "feature": [
       "Microsoft-Hyper-V-All"
     ],
-    "InvokeScript": [
-      "bcdedit /set hypervisorschedulertype classic"
-    ],
     "link": "https://winutil.christitus.com/dev/features/features/hyperv"
   },
   "WPFFeatureslegacymedia": {
@@ -129,7 +126,7 @@
     "link": "https://winutil.christitus.com/dev/features/features/sandbox"
   },
   "WPFFeatureInstall": {
-    "Content": "Run Features",
+    "Content": "Install Features",
     "category": "Features",
     "panel": "1",
     "Type": "Button",

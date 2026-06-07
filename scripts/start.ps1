@@ -8,19 +8,14 @@
 
 param (
     [string]$Config,
-    [switch]$Run,
+    [ValidateSet("Standard", "Minimal", "Advanced")]
+    [string]$Preset,
     [switch]$Noui,
     [switch]$Offline
 )
 
 if ($Config) {
     $PARAM_CONFIG = $Config
-}
-
-$PARAM_RUN = $false
-# Handle the -Run switch
-if ($Run) {
-    $PARAM_RUN = $true
 }
 
 $PARAM_NOUI = $false

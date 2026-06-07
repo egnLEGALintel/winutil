@@ -14,6 +14,9 @@ function Invoke-WPFtweaksbutton {
 
   $Tweaks = $sync.selectedTweaks
   $dnsProvider = $sync["WPFchangedns"].text
+  if (-not ($dnsProvider)) {
+    $dnsProvider = "Default"
+  }
   $restorePointTweak = "WPFTweaksRestorePoint"
   $restorePointSelected = $Tweaks -contains $restorePointTweak
   $tweaksToRun = @($Tweaks | Where-Object { $_ -ne $restorePointTweak })
@@ -25,8 +28,6 @@ function Invoke-WPFtweaksbutton {
     [System.Windows.MessageBox]::Show($msg, "Winutil", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
     return
   }
-
-  Write-Debug "Number of tweaks to process: $($Tweaks.Count)"
 
   if ($restorePointSelected) {
     $sync.ProcessRunning = $true
@@ -55,7 +56,6 @@ function Invoke-WPFtweaksbutton {
   # The leading "," in the ParameterList is necessary because we only provide one argument and powershell cannot be convinced that we want a nested loop with only one argument otherwise
   $handle = Invoke-WPFRunspace -ParameterList @(("tweaks", $tweaksToRun), ("dnsProvider", $dnsProvider), ("completedSteps", $completedSteps), ("totalSteps", $totalSteps)) -ScriptBlock {
     param($tweaks, $dnsProvider, $completedSteps, $totalSteps)
-    Write-Debug "Inside Number of tweaks to process: $($Tweaks.Count)"
 
     $sync.ProcessRunning = $true
 
@@ -82,5 +82,6 @@ function Invoke-WPFtweaksbutton {
     Write-Host "================================="
     Write-Host "--     Tweaks are Finished    ---"
     Write-Host "================================="
+    @($tweaks | Where-Object { $sync.configs.tweaks.$_.registry -or $sync.configs.tweaks.$_.service }) | ConvertTo-Json | Out-File "$env:LocalAppData\winutil\lastrun.json" -Force
   }
 }

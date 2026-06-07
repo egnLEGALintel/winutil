@@ -2,12 +2,27 @@
 title: Automation
 weight: 7
 prev: /userguide/updates/
-next: /userguide/win11Creator/
+next: /userguide/win11creator/
 ---
 
 Use Automation to run Winutil from an exported configuration file.
 
-To create a config file:
+Winutil supports predefined presets that apply common configurations automatically:
+
+- `Standard`
+- `Minimal`
+- `Advanced`
+
+Example:
+
+```powershell
+& ([ScriptBlock]::Create((irm "https://christitus.com/win"))) -Preset Standard
+```
+
+To view exactly what each preset does, see:
+https://github.com/ChrisTitusTech/winutil/blob/main/config/preset.json
+
+To create you're own config file:
 
 1. Open Winutil.
 2. Click the gear icon in the top-right corner.
@@ -16,7 +31,7 @@ To create a config file:
 
 Once you have exported a config, launch Winutil with it using this command:
 ```powershell
-& ([ScriptBlock]::Create((irm "https://christitus.com/win"))) -Config "C:\Path\To\Config.json" -Run
+& ([ScriptBlock]::Create((irm "https://christitus.com/win"))) -Config "C:\Path\To\Config.json"
 ```
 
 This is useful for:

@@ -3,11 +3,11 @@ title: "Unwanted Pre-Installed Apps - Remove"
 description: ""
 ---
 
-```json {filename="config/tweaks.json",linenos=inline,linenostart=851}
+```json {filename="config/tweaks.json",linenos=inline,linenostart=840}
   "WPFTweaksDeBloat": {
     "Content": "Unwanted Pre-Installed Apps - Remove",
-    "Description": "This will remove a bunch of Windows pre-installed applications which most people dont want on there system.",
-    "category": "z__Advanced Tweaks - CAUTION",
+    "Description": "This will remove a bunch of Windows pre-installed applications which most people dont want on their system.",
+    "category": "Essential Tweaks",
     "panel": "1",
     "appx": [
       "Microsoft.WindowsFeedbackHub",

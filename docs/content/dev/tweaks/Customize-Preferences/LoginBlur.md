@@ -3,10 +3,10 @@ title: "Logon Screen Acrylic Blur"
 description: ""
 ---
 
-```json {filename="config/tweaks.json",linenos=inline,linenostart=1630}
+```json {filename="config/tweaks.json",linenos=inline,linenostart=1660}
   "WPFToggleLoginBlur": {
     "Content": "Logon Screen Acrylic Blur",
-    "Description": "If disabled, the acrylic blur effect will be removed on the Windows 10/11 login screen background.",
+    "Description": "Toggles the acrylic blur effect on login screen background.",
     "category": "Customize Preferences",
     "panel": "2",
     "Type": "Toggle",
@@ -26,4 +26,4 @@ description: ""
 
 Applications and System Components store and retrieve configuration data to modify Windows settings, so we can use the registry to change many settings in one place.
 
-You can find information about the registry on [Wikipedia](https://www.wikiwand.com/en/Windows_Registry) and [Microsoft's Website](https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry).
+You can find information about the registry on [Wikipedia](https://en.wikipedia.org/wiki/Windows_Registry) and [Microsoft's Website](https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry).
