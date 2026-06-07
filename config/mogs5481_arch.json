@@ -1,0 +1,26 @@
+{
+  "version": "MOGS-5481_arch",
+  "partitions": {
+    "C": {
+      "role": "Sistema",
+      "description": "Windows, frameworks, apps críticos, componentes que exigem C:"
+    },
+    "A": {
+      "role": "Apps independentes",
+      "description": "Jogos e programas que não exigem C:, preferencialmente portáteis"
+    },
+    "D": {
+      "role": "Dados pesados e temporários",
+      "description": "TEMP/TMP, downloads, VMs, WSL, VHDX, caches pesados"
+    },
+    "S": {
+      "role": "Sincronização em nuvem",
+      "description": "OneDrive, Zoho WorkDrive, SharePoint, bibliotecas de usuário"
+    }
+  },
+  "rules": {
+    "temp": "D:\\Temp",
+    "downloads": "D:\\Downloads",
+    "browserCache": "D:\\BrowserCache"
+  }
+}
